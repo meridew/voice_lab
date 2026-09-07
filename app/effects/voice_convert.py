@@ -47,6 +47,9 @@ def _v1_wrapper():
             os.chdir(VENDOR)                                   # the wrapper resolves relative config paths
             try:
                 import torch
+                # oneDNN's aarch64 JIT (Xbyak) fails with "illegal immediate parameter" on kernels these
+                # models use; native CPU kernels are fine.
+                torch.backends.mkldnn.enabled = False
                 # The wrapper hard-codes float16 autocast; on the CPU that is slow or unsupported, so
                 # autocast becomes a no-op there and everything runs in float32.
                 if not getattr(torch, "_voice_lab_autocast_patched", False):
@@ -67,8 +70,9 @@ def _v1_wrapper():
 
 
 def _run_cli(script: str, args: list[str], src_path: str, tgt_path: str) -> tuple[np.ndarray, int]:
+    launcher = Path(__file__).resolve().parents[2] / "scripts" / "seedvc_cli.py"
     with tempfile.TemporaryDirectory(prefix="vc_") as out_dir:
-        cmd = [sys.executable, script, "--source", src_path, "--target", tgt_path, "--output", out_dir, *args]
+        cmd = [sys.executable, str(launcher), script, "--source", src_path, "--target", tgt_path, "--output", out_dir, *args]
         env = {**os.environ, "PYTHONUNBUFFERED": "1"}
         proc = subprocess.run(cmd, cwd=VENDOR, env=env, capture_output=True, text=True)
         if proc.returncode != 0:
@@ -90,14 +94,15 @@ def _temp_wav(audio: np.ndarray, sr: int) -> str:
         [Param("voice", "Target voice", "voice", ""),
          Param("keep_pitch_contour", "Keep my pitch contour (F0 model)", "bool", False,
                help="Off: the base model re-synthesises pitch in the target's range. On: your melody is kept and shifted."),
-         Param("semitones", "Semitone shift (F0 model only)", "int", 8, -24, 24, 1),
-         Param("auto_f0", "Auto-match pitch level (F0 model only)", "bool", True),
+         Param("auto_f0", "Auto-match pitch level to the reference (F0 model)", "bool", True,
+               help="Shifts your median pitch onto the reference's. Leave semitones at 0 unless you want extra shift on top."),
+         Param("semitones", "Extra semitone shift (F0 model)", "int", 0, -24, 24, 1),
          Param("steps", "Diffusion steps", "int", 25, 4, 60, 1),
          Param("cfg", "Guidance (cfg rate)", "float", 0.7, 0.0, 1.0, 0.05),
          Param("length", "Length adjust", "float", 1.0, 0.5, 2.0, 0.05),
          Param("engine", "Engine", "choice", "inproc", choices=["inproc", "cli"])],
         "Timbre conversion to a library voice. Keeps your timing and emotion.")
-def voice_convert(audio, sr, voice="", keep_pitch_contour=False, semitones=8, auto_f0=True, steps=25, cfg=0.7, length=1.0, engine="inproc"):
+def voice_convert(audio, sr, voice="", keep_pitch_contour=False, semitones=0, auto_f0=True, steps=25, cfg=0.7, length=1.0, engine="inproc"):
     if not voice:
         raise ValueError("Pick a target voice (make one on the Voices tab).")
     src_path = _temp_wav(audio, sr)
@@ -106,11 +111,29 @@ def voice_convert(audio, sr, voice="", keep_pitch_contour=False, semitones=8, au
         if engine == "inproc":
             wrapper = _v1_wrapper()
             with _lock:
-                out = wrapper.convert_voice(src_path, tgt_path, diffusion_steps=int(steps), length_adjust=float(length),
+                # convert_voice contains `yield`, so it is always a generator; with stream_output=False the
+                # full waveform arrives as the generator's return value (StopIteration.value).
+                gen = wrapper.convert_voice(src_path, tgt_path, diffusion_steps=int(steps), length_adjust=float(length),
                                             inference_cfg_rate=float(cfg), f0_condition=bool(keep_pitch_contour),
                                             auto_f0_adjust=bool(auto_f0), pitch_shift=int(semitones), stream_output=False)
+                out, last = None, None
+                if hasattr(gen, "__next__"):
+                    try:
+                        while True:
+                            last = next(gen)
+                    except StopIteration as stop:
+                        out = stop.value
+                else:
+                    out = gen
+                if out is None and isinstance(last, tuple) and len(last) == 2 and last[1] is not None:
+                    out = last[1][1] if isinstance(last[1], tuple) else last[1]
+                if out is None:
+                    raise RuntimeError("Seed-VC returned no audio")
             out = np.asarray(out, dtype=np.float32).squeeze()
-            out_sr = getattr(wrapper, "sr", None) or (44100 if keep_pitch_contour else 22050)
+            if out.dtype == np.int16 or np.max(np.abs(out)) > 2.0:
+                out = out / 32768.0
+            # The F0-conditioned model works at wrapper.sr_f0 (44.1 kHz); the base model at wrapper.sr (22.05 kHz).
+            out_sr = (getattr(wrapper, "sr_f0", None) or 44100) if keep_pitch_contour else (getattr(wrapper, "sr", None) or 22050)
             return out, int(out_sr)
         return _run_cli("inference.py", ["--diffusion-steps", str(int(steps)), "--length-adjust", str(float(length)),
                                          "--inference-cfg-rate", str(float(cfg)), "--f0-condition", _bool(keep_pitch_contour),

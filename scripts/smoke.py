@@ -47,7 +47,7 @@ take, take_sr = load(library.source_path(take_name))
 print(f"take: {take_name}, {duration(take, take_sr):.1f}s, median pitch {fmt(median_f0(take, take_sr))} ({time.time() - t:.1f}s)")
 
 runs = [("v1 base", [{"name": "voice_convert", "params": {"voice": "harbour-master", "keep_pitch_contour": False, "steps": args.steps, "engine": args.engine}}]),
-        ("v1 f0 +8st", [{"name": "voice_convert", "params": {"voice": "harbour-master", "keep_pitch_contour": True, "semitones": 8, "auto_f0": True, "steps": args.steps, "engine": args.engine}}])]
+        ("v1 f0 auto", [{"name": "voice_convert", "params": {"voice": "harbour-master", "keep_pitch_contour": True, "semitones": 0, "auto_f0": True, "steps": args.steps, "engine": args.engine}}])]
 if args.v2:
     runs.append(("v2 style", [{"name": "voice_convert_v2", "params": {"voice": "harbour-master", "convert_style": True, "steps": args.steps}}]))
 

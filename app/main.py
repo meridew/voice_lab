@@ -147,6 +147,7 @@ def add_effect(effect_name, chain):
     chain = list(chain or [])
     if effect_name in REGISTRY:
         chain.append({"name": effect_name, "params": REGISTRY[effect_name].defaults()})
+    print(f"[chain] add {effect_name!r} -> {len(chain)} step(s)", flush=True)
     return chain
 
 
@@ -266,9 +267,11 @@ with gr.Blocks(title="Voice Lab", css=CSS, theme=gr.themes.Soft()) as demo:
                 c_model = gr.Radio(choices=["v1", "v2"], value="v1", label="Model",
                                    info="v1: timbre conversion, fastest, pitch controls. v2: also converts accent and emotion, slower.")
                 with gr.Group():
-                    c_keep = gr.Checkbox(value=False, label="Keep my pitch contour (v1 F0 model)")
-                    c_semi = gr.Slider(-12, 16, value=8, step=1, label="Semitone shift (v1 F0 model only)")
-                    c_autof0 = gr.Checkbox(value=True, label="Auto-match pitch level (v1 F0 model only)")
+                    c_keep = gr.Checkbox(value=False, label="Keep my pitch contour (v1 F0 model)",
+                                         info="Off: pitch is re-synthesised in the reference's range. On: your melody is kept and moved.")
+                    c_autof0 = gr.Checkbox(value=True, label="Auto-match pitch level to the reference (F0 model)")
+                    c_semi = gr.Slider(-12, 16, value=0, step=1, label="Extra semitone shift on top (F0 model)",
+                                       info="With auto-match on, leave at 0; without it, 6-10 is the male-to-female range.")
                     c_steps = gr.Slider(4, 60, value=25, step=1, label="Diffusion steps (fewer = faster drafts)")
                     c_cfg = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="Guidance (v1)")
                 with gr.Accordion("v2 options", open=False):
@@ -296,6 +299,7 @@ with gr.Blocks(title="Voice Lab", css=CSS, theme=gr.themes.Soft()) as demo:
 
                 @gr.render(inputs=[chain_state])
                 def render_chain(chain):
+                    print(f"[chain] render {len(chain or [])} step(s)", flush=True)
                     if not chain:
                         gr.Markdown("*Chain is empty. Add an effect above, or load a preset.*")
                     for i, step in enumerate(chain):
@@ -410,4 +414,4 @@ with gr.Blocks(title="Voice Lab", css=CSS, theme=gr.themes.Soft()) as demo:
 
 if __name__ == "__main__":
     demo.queue(default_concurrency_limit=1).launch(server_name="127.0.0.1", server_port=int(os.environ.get("PORT", "7860")),
-                                                    show_api=False, inbrowser=False, share=False)
+                                                    show_api=os.environ.get("VOICE_LAB_SHOW_API") == "1", inbrowser=False, share=False)
