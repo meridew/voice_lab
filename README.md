@@ -5,8 +5,8 @@ synthetic character voice, chain DSP effects, and keep everything in a library o
 Nothing leaves the laptop after the one-time model download.
 
 Runs on the CPU inside WSL2 (Ubuntu 24.04, ARM64). The Snapdragon has no CUDA, so this is offline
-conversion, not real-time: expect roughly a minute of compute per ten seconds of audio at 25 diffusion
-steps, and a few seconds at 10 steps for drafts.
+conversion, not real-time: measured about 9x real time at 15 diffusion steps (a 7 s take converts in
+a minute once the models are warm); time scales with the step count, so use 8-10 steps for drafts.
 
 ## Layout
 
@@ -56,13 +56,15 @@ presets are plain files and renders are reproducible.
 A 6.8 s male stand-in take (Kokoro `am_adam`, median pitch 103 Hz) converted to a Kokoro `af_heart`
 reference (198 Hz) at 15 diffusion steps:
 
-| Path | Output | Median pitch | Time incl. model load |
+| Path | Output | Median pitch | Time |
 | --- | --- | --- | --- |
-| v1 base (pitch re-synthesised) | 22.05 kHz | 204 Hz | 76 s |
-| v1 F0 model, auto-match, 0 st | 44.1 kHz | 201 Hz | 86 s |
+| v1 base, cold (first conversion in the app, loads models) | 22.05 kHz | 203 Hz | 82 s |
+| v1 base, warm | 22.05 kHz | 199 Hz | 61 s |
+| v1 F0 model, auto-match, 0 st (fresh process) | 44.1 kHz | 201 Hz | 86 s |
 
-Model loading dominates the first conversion; the app keeps the v1 models warm, so later conversions
-are much faster. See `scripts/smoke.sh` and `scripts/warmprobe.py`.
+So roughly 9x real time at 15 steps with the models warm. Cheaper knobs in order: fewer diffusion
+steps, shorter takes, then (untried) bfloat16 autocast on the Oryon cores or the Seed-VC "tiny"
+real-time checkpoint at lower quality. See `scripts/smoke.sh` and `scripts/warmprobe.sh`.
 
 ## ARM64 notes (what setup.sh works around)
 

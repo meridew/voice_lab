@@ -9,7 +9,10 @@ const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } })
 const errors = []
 page.on('pageerror', (e) => errors.push(String(e)))
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()) })
-await page.goto('http://localhost:7860', { waitUntil: 'load' })   // Gradio keeps a heartbeat open, so never "networkidle"
+for (let attempt = 0; ; attempt++) {                                // the server may still be starting
+  try { await page.goto('http://localhost:7860', { waitUntil: 'load' }); break }   // Gradio keeps a heartbeat open, so never "networkidle"
+  catch (e) { if (attempt >= 20) throw e; await new Promise((r) => setTimeout(r, 3000)) }
+}
 await page.getByRole('tab', { name: 'Effects chain' }).waitFor({ timeout: 30000 })
 await page.getByRole('tab', { name: 'Effects chain' }).click()
 await page.getByRole('button', { name: 'Add to chain' }).click()
