@@ -51,6 +51,29 @@ An effect is one function decorated with `@effect(name, label, category, params)
 that maps `(audio, sr, **params) -> (audio, sr)`. Chains are JSON lists of `{name, params}`, so
 presets are plain files and renders are reproducible.
 
+## Measured on this laptop (Snapdragon X2 Elite Extreme, CPU only, 2026-09-07)
+
+A 6.8 s male stand-in take (Kokoro `am_adam`, median pitch 103 Hz) converted to a Kokoro `af_heart`
+reference (198 Hz) at 15 diffusion steps:
+
+| Path | Output | Median pitch | Time incl. model load |
+| --- | --- | --- | --- |
+| v1 base (pitch re-synthesised) | 22.05 kHz | 204 Hz | 76 s |
+| v1 F0 model, auto-match, 0 st | 44.1 kHz | 201 Hz | 86 s |
+
+Model loading dominates the first conversion; the app keeps the v1 models warm, so later conversions
+are much faster. See `scripts/smoke.sh` and `scripts/warmprobe.py`.
+
+## ARM64 notes (what setup.sh works around)
+
+- No sudo in WSL, so uv supplies Python 3.10 and every dependency is a wheel.
+- `soundfile` 0.12.1 has no bundled libsndfile on aarch64; 0.13 does.
+- Seed-VC pins CUDA nightlies and float16; CPU wheels are installed instead, the in-process wrapper
+  gets a CPU-safe autocast, and `inference_v2.py` is patched to float32 on CPU.
+- oneDNN's aarch64 JIT fails inside these models ("Xbyak ... illegal immediate parameter"); the
+  mkldnn backend is disabled so PyTorch's native kernels run.
+- Invoke `wsl` from PowerShell, not Git Bash, which rewrites `/mnt/c` paths.
+
 ## Notes
 
 - Models: Seed-VC (GPL-3), Kokoro-82M (Apache-2), pedalboard (GPL-3), Gradio (Apache-2).

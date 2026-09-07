@@ -306,38 +306,43 @@ with gr.Blocks(title="Voice Lab", css=CSS, theme=gr.themes.Soft()) as demo:
                         eff = REGISTRY.get(step["name"])
                         if eff is None:
                             continue
-                        with gr.Group():
-                            with gr.Row():
-                                gr.Markdown(f"**{i + 1}. {eff.label}**  <span style='opacity:.6'>{eff.help}</span>")
-                                up = gr.Button("Up", size="sm", scale=0)
-                                rm = gr.Button("Remove", size="sm", scale=0, variant="stop")
-                            with gr.Row():
+                        # Stable keys let Gradio keep these components across re-renders, so a drag is not interrupted.
+                        with gr.Group(key=f"step-{i}"):
+                            with gr.Row(key=f"step-{i}-head"):
+                                gr.Markdown(f"**{i + 1}. {eff.label}**  <span style='opacity:.6'>{eff.help}</span>", key=f"step-{i}-title")
+                                up = gr.Button("Up", size="sm", scale=0, key=f"step-{i}-up")
+                                rm = gr.Button("Remove", size="sm", scale=0, variant="stop", key=f"step-{i}-rm")
+                            with gr.Row(key=f"step-{i}-params"):
                                 for p in eff.params:
                                     value = step.get("params", {}).get(p.name, p.default)
+                                    key = f"step-{i}-{p.name}"
                                     if p.kind in ("float", "int"):
-                                        comp = gr.Slider(p.min, p.max, value=value, step=p.step or (1 if p.kind == "int" else None), label=p.label, info=p.help or None)
-                                        event = comp.release
+                                        comp = gr.Slider(p.min, p.max, value=value, step=p.step or (1 if p.kind == "int" else None), label=p.label, info=p.help or None, key=key)
+                                        events = (comp.release, comp.change)          # drags commit on release, typed values on change
                                     elif p.kind == "bool":
-                                        comp = gr.Checkbox(value=bool(value), label=p.label, info=p.help or None)
-                                        event = comp.change
+                                        comp = gr.Checkbox(value=bool(value), label=p.label, info=p.help or None, key=key)
+                                        events = (comp.change,)
                                     elif p.kind == "choice":
-                                        comp = gr.Dropdown(choices=p.choices, value=value, label=p.label)
-                                        event = comp.change
+                                        comp = gr.Dropdown(choices=p.choices, value=value, label=p.label, key=key)
+                                        events = (comp.change,)
                                     elif p.kind == "voice":
                                         voices = library.list_voices()
-                                        comp = gr.Dropdown(choices=voices, value=value if value in voices else (voices[-1] if voices else None), label=p.label)
-                                        event = comp.change
+                                        comp = gr.Dropdown(choices=voices, value=value if value in voices else (voices[-1] if voices else None), label=p.label, key=key)
+                                        events = (comp.change,)
                                     else:
-                                        comp = gr.Textbox(value=str(value), label=p.label, lines=2)
-                                        event = comp.blur
+                                        comp = gr.Textbox(value=str(value), label=p.label, lines=2, key=key)
+                                        events = (comp.blur,)
 
                                     def setter(value, chain, i=i, pname=p.name, kind=p.kind):
                                         chain = json.loads(json.dumps(chain))
                                         if kind == "int":
                                             value = int(value)
-                                        chain[i].setdefault("params", {})[pname] = value
+                                        if chain[i].setdefault("params", {}).get(pname) == value:
+                                            return gr.skip()                         # no change: no re-render
+                                        chain[i]["params"][pname] = value
                                         return chain
-                                    event(setter, inputs=[comp, chain_state], outputs=[chain_state])
+                                    for event in events:
+                                        event(setter, inputs=[comp, chain_state], outputs=[chain_state], trigger_mode="always_last")
 
                             def remove(chain, i=i):
                                 chain = list(chain); chain.pop(i); return chain
