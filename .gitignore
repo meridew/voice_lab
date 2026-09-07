@@ -1,0 +1,9 @@
+vendor/
+logs/
+library/renders/
+library/voices/*.wav
+sources/
+__pycache__/
+*.pyc
+.venv/
+*.log
