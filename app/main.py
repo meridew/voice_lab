@@ -1,4 +1,4 @@
-"""Voice Lab: record or import sounds, convert voices, chain effects, keep a library.
+"""Voice Lab: record or import a take, convert the voice, chain effects, keep a library.
 
 Runs on the CPU inside WSL2; open http://localhost:7860 in a Windows browser.
 """
@@ -12,13 +12,13 @@ import traceback
 from pathlib import Path
 
 import gradio as gr
-import numpy as np
+import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import library  # noqa: E402
 from audio import duration, load, median_f0, peak_normalize  # noqa: E402
 from effects import REGISTRY, apply_chain, by_category  # noqa: E402
-from effects.tts import FEMALE, VOICES as KOKORO_VOICES, synthesize  # noqa: E402
+from effects.tts import FEMALE, MALE, synthesize  # noqa: E402
 
 
 def _ffmpeg_on_path() -> None:
@@ -40,6 +40,8 @@ _ffmpeg_on_path()
 
 DEFAULT_TEXT = ("Docking clearance granted. Hold your approach vector and cut thrust at two hundred metres. "
                 "Welcome to Meridian Port; the harbour master will be with you shortly.")
+SECONDS_PER_SECOND_AT_15_STEPS = 9.0          # measured on this laptop, v1, models warm
+CATEGORY_LABEL = {"voice": "Voice", "dsp": "DSP", "utility": "Utility"}
 
 
 # ----------------------------------------------------------------------------- shared helpers
@@ -47,53 +49,78 @@ def _err(message: str):
     raise gr.Error(message)
 
 
-def _sources():
+def _sources(prefer=None):
     names = library.list_sources()
-    return gr.update(choices=names, value=names[-1] if names else None)
+    return gr.update(choices=names, value=prefer if prefer in names else (names[-1] if names else None))
 
 
-def _voices():
+def _voices(prefer=None):
     names = library.list_voices()
-    return gr.update(choices=names, value=names[-1] if names else None)
+    return gr.update(choices=names, value=prefer if prefer in names else (names[-1] if names else None))
 
 
-def _audio_choices():
+def _audio_choices(prefer=None):
     choices = library.all_audio_choices()
-    return gr.update(choices=choices, value=choices[0] if choices else None)
+    return gr.update(choices=choices, value=prefer if prefer in choices else (choices[0] if choices else None))
 
 
-def _presets():
+def _presets(prefer=None):
     names = library.list_presets()
-    return gr.update(choices=names, value=names[0] if names else None)
+    return gr.update(choices=names, value=prefer if prefer in names else (names[0] if names else None))
+
+
+def _effect_choices():
+    return [(f"{CATEGORY_LABEL.get(cat, cat)} · {e.label}", e.name) for cat, effects in by_category().items() for e in effects]
+
+
+def _kokoro_choices():
+    return [(f"Female · {v}", v) for v in FEMALE] + [(f"Male · {v}", v) for v in MALE]
 
 
 def _chain_summary(chain) -> str:
-    return " > ".join(REGISTRY[s["name"]].label if s["name"] in REGISTRY else s["name"] for s in (chain or []))
+    return " › ".join(REGISTRY[s["name"]].label if s["name"] in REGISTRY else s["name"] for s in (chain or []))
+
+
+def _when(name: str) -> str:
+    stamp = name.split("_", 1)[0]
+    return f"{stamp[6:8]}/{stamp[4:6]} {stamp[9:11]}:{stamp[11:13]}" if len(stamp) >= 13 else ""
 
 
 def _renders_rows():
-    return [[r["name"], r.get("seconds", ""), r.get("label", ""), _chain_summary(r.get("chain")), r.get("notes", "")] for r in library.list_renders()]
+    return [[r.get("label", ""), _when(r["name"]), r.get("seconds", ""), _chain_summary(r.get("chain")), r.get("notes", "")]
+            for r in library.list_renders()]
+
+
+def _render_names():
+    return [r["name"] for r in library.list_renders()]
 
 
 def _f0_note(audio, sr, out, out_sr) -> str:
     f_in, f_out = median_f0(audio, sr), median_f0(out, out_sr)
     fmt = lambda f: f"{f:.0f} Hz" if f else "n/a"
-    return f"median pitch {fmt(f_in)} -> {fmt(f_out)}"
+    return f"pitch {fmt(f_in)} → {fmt(f_out)}"
 
 
-# ----------------------------------------------------------------------------- sources
-def save_source(audio_path, name):
+def _estimate(source, steps, model):
+    if not source:
+        return ""
+    try:
+        info = sf.info(library.source_path(source))
+        seconds = info.frames / info.samplerate
+    except Exception:
+        return ""
+    est = seconds * SECONDS_PER_SECOND_AT_15_STEPS * (float(steps) / 15.0) * (1.6 if model == "v2" else 1.0)
+    return f"<span class='muted'>{seconds:.1f} s take · about {est / 60:.1f} min of compute at {int(steps)} steps</span>"
+
+
+# ----------------------------------------------------------------------------- takes and voices
+def save_take(audio_path, name):
     if not audio_path:
         _err("Record or upload something first.")
     fname = library.add_source(audio_path, name)
-    return f"Saved sources/{fname}", _sources(), _audio_choices()
+    return f"Saved take {fname}", _sources(fname), _audio_choices()
 
 
-def preview_source(name):
-    return library.source_path(name) if name else None
-
-
-# ----------------------------------------------------------------------------- voices
 def make_voice(name, text, kokoro_voice, speed):
     if not text.strip():
         _err("Give the voice something to say.")
@@ -101,7 +128,7 @@ def make_voice(name, text, kokoro_voice, speed):
     audio, sr = synthesize(text, kokoro_voice, speed)
     audio = peak_normalize(audio)
     vname = library.add_voice(name or kokoro_voice, audio, sr, {"text": text, "kokoro_voice": kokoro_voice, "speed": speed})
-    return (sr, audio), f"Saved voice '{vname}' ({duration(audio, sr):.1f}s in {time.time() - t:.1f}s)", _voices(), _audio_choices()
+    return f"Saved voice {vname} · {duration(audio, sr):.1f} s in {time.time() - t:.1f} s", _voices(vname), _audio_choices()
 
 
 def import_voice(path, name):
@@ -109,7 +136,7 @@ def import_voice(path, name):
         _err("Upload a wav of the target voice first.")
     audio, sr = load(path)
     vname = library.add_voice(name or Path(path).stem, peak_normalize(audio), sr, {"imported": Path(path).name})
-    return (sr, audio), f"Imported voice '{vname}'", _voices(), _audio_choices()
+    return f"Imported voice {vname}", _voices(vname), _audio_choices()
 
 
 def preview_voice(name):
@@ -117,11 +144,11 @@ def preview_voice(name):
 
 
 # ----------------------------------------------------------------------------- convert
-def convert(source, voice, model, keep_contour, semitones, auto_f0, steps, cfg, v2_style, v2_intel, v2_sim, label):
+def convert(source, voice, model, steps, cfg, keep_contour, auto_f0, semitones, v2_style, v2_intel, v2_sim, label):
     if not source:
-        _err("Pick a source recording (Sources tab).")
+        _err("Pick a take.")
     if not voice:
-        _err("Pick a target voice (Voices tab).")
+        _err("Pick a voice.")
     audio, sr = load(library.source_path(source))
     if model == "v1":
         chain = [{"name": "voice_convert", "params": {"voice": voice, "keep_pitch_contour": bool(keep_contour), "semitones": int(semitones),
@@ -132,14 +159,14 @@ def convert(source, voice, model, keep_contour, semitones, auto_f0, steps, cfg, 
     t = time.time()
     try:
         out, out_sr = apply_chain(audio, sr, chain)
-    except Exception as e:  # surface the real reason in the UI
+    except Exception as e:
         traceback.print_exc()
         _err(f"Conversion failed: {e}")
     out = peak_normalize(out)
-    name = library.save_render(out, out_sr, {"label": label or f"{Path(source).stem} as {voice}", "input": f"source:{source}", "chain": chain},
+    name = library.save_render(out, out_sr, {"label": label or f"{voice} · {model}", "input": f"source:{source}", "chain": chain},
                                label=label or f"{voice}-{model}")
-    status = f"{time.time() - t:.0f}s for {duration(audio, sr):.1f}s of audio; {_f0_note(audio, sr, out, out_sr)}; saved renders/{name}.wav"
-    return (out_sr, out), library.source_path(source), status, _renders_rows(), _audio_choices()
+    status = f"{time.time() - t:.0f} s · {_f0_note(audio, sr, out, out_sr)} · saved as {name}"
+    return (out_sr, out), library.source_path(source), status, _renders_rows(), _render_names(), _audio_choices()
 
 
 # ----------------------------------------------------------------------------- effect chains
@@ -147,7 +174,6 @@ def add_effect(effect_name, chain):
     chain = list(chain or [])
     if effect_name in REGISTRY:
         chain.append({"name": effect_name, "params": REGISTRY[effect_name].defaults()})
-    print(f"[chain] add {effect_name!r} -> {len(chain)} step(s)", flush=True)
     return chain
 
 
@@ -175,7 +201,7 @@ def run_chain(input_choice, chain, label):
         _err(f"Chain failed: {e}")
     out = peak_normalize(out)
     name = library.save_render(out, out_sr, {"label": label or _chain_summary(chain), "input": input_choice, "chain": chain}, label=label or "chain")
-    return (out_sr, out), f"{time.time() - t:.1f}s; " + ", ".join(logs) + f"; saved renders/{name}.wav", _renders_rows(), _audio_choices()
+    return (out_sr, out), f"{time.time() - t:.1f} s · " + ", ".join(logs) + f" · saved as {name}", _renders_rows(), _render_names(), _audio_choices()
 
 
 def save_preset(name, chain, notes):
@@ -184,7 +210,7 @@ def save_preset(name, chain, notes):
     if not chain:
         _err("The chain is empty.")
     pname = library.save_preset(name, chain, notes)
-    return f"Saved preset '{pname}'", _presets()
+    return f"Saved preset {pname}", _presets(pname), ""
 
 
 def load_preset(name):
@@ -198,10 +224,10 @@ def delete_preset(name):
 
 
 # ----------------------------------------------------------------------------- library
-def select_render(evt: gr.SelectData, rows):
-    if evt.index is None or not rows:
-        return None, "", ""
-    name = rows[evt.index[0]][0]
+def select_render(evt: gr.SelectData, names):
+    if evt.index is None or not names or evt.index[0] >= len(names):
+        return None, None, ""
+    name = names[evt.index[0]]
     notes = next((r.get("notes", "") for r in library.list_renders() if r["name"] == name), "")
     return name, library.render_path(name), notes
 
@@ -209,212 +235,225 @@ def select_render(evt: gr.SelectData, rows):
 def save_notes(name, notes):
     if name:
         library.set_render_notes(name, notes)
-    return _renders_rows()
+    return _renders_rows(), _render_names()
 
 
 def delete_render(name):
     if name:
         library.delete_render(name)
-    return None, None, _renders_rows(), _audio_choices()
+    return None, None, _renders_rows(), _render_names(), _audio_choices()
 
 
 # ----------------------------------------------------------------------------- UI
+THEME = gr.themes.Base(primary_hue=gr.themes.colors.sky, neutral_hue=gr.themes.colors.slate,
+                       font=["ui-sans-serif", "system-ui", "sans-serif"], font_mono=["ui-monospace", "monospace"]).set(
+    block_label_text_size="*text_xs", block_title_text_size="*text_sm", block_padding="10px 12px",
+    layout_gap="10px", block_radius="10px", input_padding="6px 10px", button_large_padding="10px 18px")
+
 CSS = """
-.gradio-container { max-width: 1280px !important; }
-.status { font-family: ui-monospace, monospace; font-size: 0.9em; }
+/* body is a flex column: an explicit width stops the container shrinking to its content */
+.gradio-container { width: 100% !important; max-width: 1240px !important; margin: 0 auto !important; }
+footer { display: none !important; }
+.muted { opacity: .62; font-size: .86em; }
+.status { font-family: ui-monospace, monospace; font-size: .82em; opacity: .8; min-height: 1.4em; }
+.title h2 { margin: 0 0 .1em 0; font-weight: 600; letter-spacing: .01em; }
+.step .prose { font-size: .92em; }
+.tight > .form, .tight .block { padding: 6px 8px !important; }
 """
 
-with gr.Blocks(title="Voice Lab", css=CSS, theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# Voice Lab\nRecord, convert, mangle, keep. Everything runs locally on the CPU.")
+FORCE_DARK = "() => { document.body.classList.add('dark'); }"
 
-    # ---- Sources
-    with gr.Tab("Sources"):
-        with gr.Row():
-            with gr.Column():
-                rec = gr.Audio(sources=["microphone", "upload"], type="filepath", label="Record or upload a take (wav)")
-                rec_name = gr.Textbox(label="Name", placeholder="harbour master line 3")
-                rec_save = gr.Button("Save to sources", variant="primary")
-                rec_status = gr.Markdown(elem_classes="status")
-            with gr.Column():
-                src_list = gr.Dropdown(choices=library.list_sources(), label="Saved sources", interactive=True)
-                src_refresh = gr.Button("Refresh")
-                src_play = gr.Audio(label="Preview", type="filepath")
 
-    # ---- Voices
-    with gr.Tab("Voices"):
-        gr.Markdown("A reference voice is a clean 10-20 second clip. Synthesise one with Kokoro so the character is nobody's real voice, or import a wav you have the right to use.")
-        with gr.Row():
-            with gr.Column():
-                v_name = gr.Textbox(label="Voice name", placeholder="harbour-master")
-                v_text = gr.Textbox(label="Text", value=DEFAULT_TEXT, lines=3)
-                v_kokoro = gr.Dropdown(choices=KOKORO_VOICES, value=FEMALE[0], label="Kokoro voice (af/bf female, am/bm male)")
-                v_speed = gr.Slider(0.6, 1.4, value=1.0, step=0.05, label="Speed")
-                v_make = gr.Button("Synthesise reference voice", variant="primary")
-                v_upload = gr.Audio(sources=["upload"], type="filepath", label="Or import a reference wav")
-                v_import = gr.Button("Import as voice")
-                v_status = gr.Markdown(elem_classes="status")
-            with gr.Column():
-                v_out = gr.Audio(label="Reference", type="numpy")
-                v_list = gr.Dropdown(choices=library.list_voices(), label="Saved voices", interactive=True)
-                v_play = gr.Audio(label="Preview", type="filepath")
+with gr.Blocks(title="Voice Lab", theme=THEME, css=CSS, js=FORCE_DARK) as demo:
+    with gr.Row():
+        gr.Markdown("## Voice Lab", elem_classes="title")
+        gr.Markdown("<span class='muted'>local · CPU · nothing leaves the laptop</span>")
 
-    # ---- Convert
-    with gr.Tab("Convert"):
-        with gr.Row():
-            with gr.Column():
-                c_source = gr.Dropdown(choices=library.list_sources(), label="Source take")
-                c_voice = gr.Dropdown(choices=library.list_voices(), label="Target voice")
-                c_model = gr.Radio(choices=["v1", "v2"], value="v1", label="Model",
-                                   info="v1: timbre conversion, fastest, pitch controls. v2: also converts accent and emotion, slower.")
-                with gr.Group():
-                    c_keep = gr.Checkbox(value=False, label="Keep my pitch contour (v1 F0 model)",
-                                         info="Off: pitch is re-synthesised in the reference's range. On: your melody is kept and moved.")
-                    c_autof0 = gr.Checkbox(value=True, label="Auto-match pitch level to the reference (F0 model)")
-                    c_semi = gr.Slider(-12, 16, value=0, step=1, label="Extra semitone shift on top (F0 model)",
-                                       info="With auto-match on, leave at 0; without it, 6-10 is the male-to-female range.")
-                    c_steps = gr.Slider(4, 60, value=25, step=1, label="Diffusion steps (fewer = faster drafts)")
-                    c_cfg = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="Guidance (v1)")
-                with gr.Accordion("v2 options", open=False):
-                    c_v2_style = gr.Checkbox(value=True, label="Convert accent and emotion too")
-                    c_v2_intel = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="Intelligibility")
-                    c_v2_sim = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="Similarity")
-                c_label = gr.Textbox(label="Render label (optional)")
-                c_go = gr.Button("Convert", variant="primary")
-                c_status = gr.Markdown(elem_classes="status")
-            with gr.Column():
-                c_out = gr.Audio(label="Converted", type="numpy")
-                c_ab = gr.Audio(label="Original, for A/B", type="filepath")
+    with gr.Tabs() as tabs:
+        # =================================================================== Convert
+        with gr.Tab("Convert", id="convert"):
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=5, min_width=380):
+                    c_source = gr.Dropdown(choices=library.list_sources(), label="Take")
+                    with gr.Accordion("Record or upload a take", open=False):
+                        rec = gr.Audio(sources=["microphone", "upload"], type="filepath", show_label=False)
+                        with gr.Row():
+                            rec_name = gr.Textbox(label="Name", placeholder="harbour master, line 3", scale=3)
+                            rec_save = gr.Button("Save take", scale=1, min_width=110)
+                        rec_status = gr.Markdown(elem_classes="status")
 
-    # ---- Effects chain
-    with gr.Tab("Effects chain"):
-        chain_state = gr.State([])
-        with gr.Row():
-            with gr.Column(scale=3):
-                e_input = gr.Dropdown(choices=library.all_audio_choices(), label="Input (source, render or voice)")
-                with gr.Row():
-                    e_pick = gr.Dropdown(choices=[e.name for cat in by_category().values() for e in cat], label="Effect",
-                                         info="voice: conversion and TTS. dsp: pedalboard and numpy processors. utility: housekeeping.")
-                    e_add = gr.Button("Add to chain")
-                e_refresh = gr.Button("Refresh inputs and voices")
+                    c_voice = gr.Dropdown(choices=library.list_voices(), label="Voice")
+                    with gr.Accordion("Voice preview and new voices", open=False):
+                        v_play = gr.Audio(label="Reference", type="filepath")
+                        gr.Markdown("<span class='muted'>A reference is a clean 10–20 s clip. Synthesise one so the character is nobody's real voice.</span>")
+                        v_kokoro = gr.Dropdown(choices=_kokoro_choices(), value=FEMALE[0], label="Kokoro voice")
+                        v_text = gr.Textbox(label="Text", value=DEFAULT_TEXT, lines=2)
+                        with gr.Row():
+                            v_speed = gr.Slider(0.6, 1.4, value=1.0, step=0.05, label="Speed", scale=2)
+                            v_name = gr.Textbox(label="Name", placeholder="harbour-master", scale=2)
+                            v_make = gr.Button("Synthesise", scale=1, min_width=110)
+                        with gr.Row():
+                            v_upload = gr.Audio(sources=["upload"], type="filepath", label="Or import a wav", scale=3)
+                            v_import = gr.Button("Import", scale=1, min_width=110)
+                        v_status = gr.Markdown(elem_classes="status")
 
-                @gr.render(inputs=[chain_state])
-                def render_chain(chain):
-                    print(f"[chain] render {len(chain or [])} step(s)", flush=True)
-                    if not chain:
-                        gr.Markdown("*Chain is empty. Add an effect above, or load a preset.*")
-                    for i, step in enumerate(chain):
-                        eff = REGISTRY.get(step["name"])
-                        if eff is None:
-                            continue
-                        # Stable keys let Gradio keep these components across re-renders, so a drag is not interrupted.
-                        with gr.Group(key=f"step-{i}"):
-                            with gr.Row(key=f"step-{i}-head"):
-                                gr.Markdown(f"**{i + 1}. {eff.label}**  <span style='opacity:.6'>{eff.help}</span>", key=f"step-{i}-title")
-                                up = gr.Button("Up", size="sm", scale=0, key=f"step-{i}-up")
-                                rm = gr.Button("Remove", size="sm", scale=0, variant="stop", key=f"step-{i}-rm")
-                            with gr.Row(key=f"step-{i}-params"):
-                                for p in eff.params:
-                                    value = step.get("params", {}).get(p.name, p.default)
-                                    key = f"step-{i}-{p.name}"
-                                    if p.kind in ("float", "int"):
-                                        comp = gr.Slider(p.min, p.max, value=value, step=p.step or (1 if p.kind == "int" else None), label=p.label, info=p.help or None, key=key)
-                                        events = (comp.release, comp.change)          # drags commit on release, typed values on change
-                                    elif p.kind == "bool":
-                                        comp = gr.Checkbox(value=bool(value), label=p.label, info=p.help or None, key=key)
-                                        events = (comp.change,)
-                                    elif p.kind == "choice":
-                                        comp = gr.Dropdown(choices=p.choices, value=value, label=p.label, key=key)
-                                        events = (comp.change,)
-                                    elif p.kind == "voice":
-                                        voices = library.list_voices()
-                                        comp = gr.Dropdown(choices=voices, value=value if value in voices else (voices[-1] if voices else None), label=p.label, key=key)
-                                        events = (comp.change,)
-                                    else:
-                                        comp = gr.Textbox(value=str(value), label=p.label, lines=2, key=key)
-                                        events = (comp.blur,)
+                    c_model = gr.Radio(choices=[("v1 · timbre", "v1"), ("v2 · timbre, accent and emotion", "v2")], value="v1", label="Model")
+                    c_go = gr.Button("Convert", variant="primary", size="lg")
+                    c_estimate = gr.Markdown()
+                    with gr.Accordion("Tuning", open=False):
+                        c_steps = gr.Slider(4, 60, value=15, step=1, label="Diffusion steps", info="Quality against time. 8–10 for drafts.")
+                        c_cfg = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="Guidance (v1)")
+                        c_keep = gr.Checkbox(value=False, label="Keep my pitch contour (v1 F0 model)",
+                                             info="Off: pitch re-synthesised in the voice's range. On: your melody kept and moved.")
+                        with gr.Row():
+                            c_autof0 = gr.Checkbox(value=True, label="Auto-match pitch level", scale=1)
+                            c_semi = gr.Slider(-12, 16, value=0, step=1, label="Extra semitones", scale=2)
+                        with gr.Row():
+                            c_v2_style = gr.Checkbox(value=True, label="v2: convert accent and emotion", scale=1)
+                            c_v2_intel = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="v2 intelligibility", scale=1)
+                            c_v2_sim = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="v2 similarity", scale=1)
+                        c_label = gr.Textbox(label="Render label", placeholder="optional")
+                with gr.Column(scale=7, min_width=420):
+                    c_out = gr.Audio(label="Converted", type="numpy")
+                    c_ab = gr.Audio(label="Original", type="filepath")
+                    c_status = gr.Markdown(elem_classes="status")
 
-                                    def setter(value, chain, i=i, pname=p.name, kind=p.kind):
-                                        chain = json.loads(json.dumps(chain))
-                                        if kind == "int":
-                                            value = int(value)
-                                        if chain[i].setdefault("params", {}).get(pname) == value:
-                                            return gr.skip()                         # no change: no re-render
-                                        chain[i]["params"][pname] = value
-                                        return chain
-                                    for event in events:
-                                        event(setter, inputs=[comp, chain_state], outputs=[chain_state], trigger_mode="always_last")
-
-                            def remove(chain, i=i):
-                                chain = list(chain); chain.pop(i); return chain
-
-                            def move_up(chain, i=i):
-                                chain = list(chain)
-                                if i > 0:
-                                    chain[i - 1], chain[i] = chain[i], chain[i - 1]
-                                return chain
-                            rm.click(remove, inputs=[chain_state], outputs=[chain_state])
-                            up.click(move_up, inputs=[chain_state], outputs=[chain_state])
-
-                with gr.Accordion("Chain as JSON", open=False):
-                    e_json = gr.Code(language="json", label="Chain")
-                    e_json_apply = gr.Button("Replace chain with this JSON")
-                e_label = gr.Textbox(label="Render label (optional)")
-                e_run = gr.Button("Apply chain", variant="primary")
-                e_status = gr.Markdown(elem_classes="status")
-            with gr.Column(scale=2):
-                e_out = gr.Audio(label="Result", type="numpy")
-                with gr.Group():
-                    gr.Markdown("**Presets**")
-                    p_list = gr.Dropdown(choices=library.list_presets(), label="Saved presets")
+        # =================================================================== Effects
+        with gr.Tab("Effects", id="effects"):
+            chain_state = gr.State([])
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=7, min_width=460):
+                    e_input = gr.Dropdown(choices=library.all_audio_choices(), label="Input")
                     with gr.Row():
-                        p_load = gr.Button("Load")
-                        p_delete = gr.Button("Delete", variant="stop")
-                    p_name = gr.Textbox(label="Save current chain as")
-                    p_notes = gr.Textbox(label="Notes", lines=2)
-                    p_save = gr.Button("Save preset")
+                        e_pick = gr.Dropdown(choices=_effect_choices(), label="Effect", scale=4)
+                        e_add = gr.Button("Add", scale=1, min_width=90)
+
+                    @gr.render(inputs=[chain_state])
+                    def render_chain(chain):
+                        if not chain:
+                            gr.Markdown("<span class='muted'>No effects yet. Add one above or load a preset.</span>")
+                        for i, step in enumerate(chain):
+                            eff = REGISTRY.get(step["name"])
+                            if eff is None:
+                                continue
+                            # Stable keys let Gradio keep these components across re-renders, so a drag is not interrupted.
+                            with gr.Group(key=f"step-{i}", elem_classes="step"):
+                                with gr.Row(key=f"step-{i}-head"):
+                                    with gr.Column(scale=6, min_width=200, key=f"step-{i}-titlecol"):
+                                        gr.Markdown(f"**{i + 1}. {eff.label}**", key=f"step-{i}-title")
+                                    up = gr.Button("▲", size="sm", scale=0, min_width=44, key=f"step-{i}-up")
+                                    rm = gr.Button("✕", size="sm", scale=0, min_width=44, variant="stop", key=f"step-{i}-rm")
+                                if eff.params:
+                                    with gr.Row(key=f"step-{i}-params"):
+                                        for p in eff.params:
+                                            value = step.get("params", {}).get(p.name, p.default)
+                                            key = f"step-{i}-{p.name}"
+                                            if p.kind in ("float", "int"):
+                                                comp = gr.Slider(p.min, p.max, value=value, step=p.step or (1 if p.kind == "int" else None), label=p.label, key=key)
+                                                events = (comp.release, comp.change)      # drags commit on release, typed values on change
+                                            elif p.kind == "bool":
+                                                comp = gr.Checkbox(value=bool(value), label=p.label, key=key)
+                                                events = (comp.change,)
+                                            elif p.kind == "choice":
+                                                comp = gr.Dropdown(choices=p.choices, value=value, label=p.label, key=key)
+                                                events = (comp.change,)
+                                            elif p.kind == "voice":
+                                                voices = library.list_voices()
+                                                comp = gr.Dropdown(choices=voices, value=value if value in voices else (voices[-1] if voices else None), label=p.label, key=key)
+                                                events = (comp.change,)
+                                            else:
+                                                comp = gr.Textbox(value=str(value), label=p.label, lines=2, key=key)
+                                                events = (comp.blur,)
+
+                                            def setter(value, chain, i=i, pname=p.name, kind=p.kind):
+                                                chain = json.loads(json.dumps(chain))
+                                                if kind == "int":
+                                                    value = int(value)
+                                                if chain[i].setdefault("params", {}).get(pname) == value:
+                                                    return gr.skip()
+                                                chain[i]["params"][pname] = value
+                                                return chain
+                                            for event in events:
+                                                event(setter, inputs=[comp, chain_state], outputs=[chain_state], trigger_mode="always_last", show_progress="hidden")
+
+                                def remove(chain, i=i):
+                                    chain = list(chain); chain.pop(i); return chain
+
+                                def move_up(chain, i=i):
+                                    chain = list(chain)
+                                    if i > 0:
+                                        chain[i - 1], chain[i] = chain[i], chain[i - 1]
+                                    return chain
+                                rm.click(remove, inputs=[chain_state], outputs=[chain_state], show_progress="hidden")
+                                up.click(move_up, inputs=[chain_state], outputs=[chain_state], show_progress="hidden")
+
+                    with gr.Row():
+                        e_label = gr.Textbox(label="Render label", placeholder="optional", scale=3)
+                        e_run = gr.Button("Apply chain", variant="primary", scale=2, min_width=140)
+                    e_status = gr.Markdown(elem_classes="status")
+                    with gr.Accordion("Chain as JSON", open=False):
+                        e_json = gr.Code(language="json", show_label=False)
+                        e_json_apply = gr.Button("Replace chain with this JSON", size="sm")
+                    with gr.Accordion("What the effects do", open=False):
+                        gr.Markdown("\n".join(f"- **{e.label}** ({CATEGORY_LABEL.get(cat, cat)}): {e.help or ', '.join(p.label for p in e.params) or '—'}"
+                                              for cat, effects in by_category().items() for e in effects))
+                with gr.Column(scale=5, min_width=360):
+                    e_out = gr.Audio(label="Result", type="numpy")
+                    gr.Markdown("**Presets**")
+                    with gr.Row():
+                        p_list = gr.Dropdown(choices=library.list_presets(), show_label=False, scale=3)
+                        p_load = gr.Button("Load", size="sm", scale=1, min_width=70)
+                        p_delete = gr.Button("Delete", size="sm", scale=1, min_width=70, variant="stop")
+                    with gr.Row():
+                        p_name = gr.Textbox(show_label=False, placeholder="save current chain as…", scale=3)
+                        p_save = gr.Button("Save", size="sm", scale=1, min_width=70)
+                    p_notes = gr.Textbox(label="Preset notes", lines=1, placeholder="optional")
                     p_status = gr.Markdown(elem_classes="status")
 
-    # ---- Library
-    with gr.Tab("Library"):
-        l_selected = gr.State(None)
-        l_table = gr.Dataframe(headers=["name", "seconds", "label", "chain", "notes"], datatype=["str", "number", "str", "str", "str"],
-                               value=_renders_rows(), interactive=False, wrap=True)
-        with gr.Row():
-            with gr.Column():
-                l_play = gr.Audio(label="Selected render", type="filepath")
-            with gr.Column():
-                l_notes = gr.Textbox(label="Notes", lines=3)
-                with gr.Row():
-                    l_save_notes = gr.Button("Save notes")
-                    l_delete = gr.Button("Delete render", variant="stop")
+        # =================================================================== Library
+        with gr.Tab("Library", id="library"):
+            l_selected = gr.State(None)
+            l_names = gr.State(_render_names())
+            l_table = gr.Dataframe(headers=["label", "when", "seconds", "chain", "notes"], datatype=["str", "str", "number", "str", "str"],
+                                   value=_renders_rows(), interactive=False, wrap=True, column_widths=["26%", "12%", "9%", "33%", "20%"])
+            with gr.Row():
+                with gr.Column(scale=6):
+                    l_play = gr.Audio(label="Selected render", type="filepath")
+                with gr.Column(scale=4):
+                    l_notes = gr.Textbox(label="Notes", lines=3)
+                    with gr.Row():
+                        l_save_notes = gr.Button("Save notes")
+                        l_delete = gr.Button("Delete render", variant="stop")
 
-    # ---- wiring
-    rec_save.click(save_source, [rec, rec_name], [rec_status, src_list, e_input]).then(lambda: _sources(), None, c_source)
-    src_refresh.click(lambda: _sources(), None, src_list)
-    src_list.change(preview_source, src_list, src_play)
+    # ---- wiring (quiet = no progress badge for instant, silent updates)
+    quiet = {"show_progress": "hidden"}
+    rec_save.click(save_take, [rec, rec_name], [rec_status, c_source, e_input])
+    v_make.click(make_voice, [v_name, v_text, v_kokoro, v_speed], [v_status, c_voice, e_input])
+    v_import.click(import_voice, [v_upload, v_name], [v_status, c_voice, e_input])
+    c_voice.change(preview_voice, c_voice, v_play, **quiet)
+    for trigger in (c_source.change, c_steps.change, c_model.change):
+        trigger(_estimate, [c_source, c_steps, c_model], c_estimate, **quiet)
+    c_go.click(convert, [c_source, c_voice, c_model, c_steps, c_cfg, c_keep, c_autof0, c_semi, c_v2_style, c_v2_intel, c_v2_sim, c_label],
+               [c_out, c_ab, c_status, l_table, l_names, e_input])
 
-    v_make.click(make_voice, [v_name, v_text, v_kokoro, v_speed], [v_out, v_status, v_list, e_input]).then(lambda: _voices(), None, c_voice)
-    v_import.click(import_voice, [v_upload, v_name], [v_out, v_status, v_list, e_input]).then(lambda: _voices(), None, c_voice)
-    v_list.change(preview_voice, v_list, v_play)
+    e_add.click(add_effect, [e_pick, chain_state], [chain_state], **quiet)
+    chain_state.change(lambda chain: json.dumps(chain, indent=2), chain_state, e_json, **quiet)
+    e_json_apply.click(replace_chain_json, [e_json, chain_state], [chain_state], **quiet)
+    e_run.click(run_chain, [e_input, chain_state, e_label], [e_out, e_status, l_table, l_names, e_input])
+    p_save.click(save_preset, [p_name, chain_state, p_notes], [p_status, p_list, p_name], **quiet)
+    p_load.click(load_preset, p_list, chain_state, **quiet)
+    p_delete.click(delete_preset, p_list, p_list, **quiet)
 
-    c_go.click(convert, [c_source, c_voice, c_model, c_keep, c_semi, c_autof0, c_steps, c_cfg, c_v2_style, c_v2_intel, c_v2_sim, c_label],
-               [c_out, c_ab, c_status, l_table, e_input])
+    l_table.select(select_render, [l_names], [l_selected, l_play, l_notes], **quiet)
+    l_save_notes.click(save_notes, [l_selected, l_notes], [l_table, l_names], **quiet)
+    l_delete.click(delete_render, [l_selected], [l_selected, l_play, l_table, l_names, e_input], **quiet)
 
-    e_add.click(add_effect, [e_pick, chain_state], [chain_state])
-    e_refresh.click(lambda: _audio_choices(), None, e_input)
-    chain_state.change(lambda chain: json.dumps(chain, indent=2), chain_state, e_json)
-    e_json_apply.click(replace_chain_json, [e_json, chain_state], [chain_state])
-    e_run.click(run_chain, [e_input, chain_state, e_label], [e_out, e_status, l_table, e_input])
-    p_save.click(save_preset, [p_name, chain_state, p_notes], [p_status, p_list])
-    p_load.click(load_preset, p_list, chain_state)
-    p_delete.click(delete_preset, p_list, p_list)
-
-    l_table.select(select_render, [l_table], [l_selected, l_play, l_notes])
-    l_save_notes.click(save_notes, [l_selected, l_notes], [l_table])
-    l_delete.click(delete_render, [l_selected], [l_selected, l_play, l_table, e_input])
-
-    # refresh dropdowns whenever a tab is opened
-    demo.load(lambda: (_sources(), _voices(), _audio_choices(), _presets(), _renders_rows()), None, [c_source, c_voice, e_input, p_list, l_table])
+    # keep every list current when the app opens or a tab is opened
+    def refresh_all():
+        return _sources(), _voices(), _audio_choices(), _presets(), _renders_rows(), _render_names()
+    refresh_outputs = [c_source, c_voice, e_input, p_list, l_table, l_names]
+    demo.load(refresh_all, None, refresh_outputs, **quiet).then(_estimate, [c_source, c_steps, c_model], c_estimate, **quiet)
+    tabs.select(refresh_all, None, refresh_outputs, **quiet)
 
 
 if __name__ == "__main__":

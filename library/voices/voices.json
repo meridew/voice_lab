@@ -6,10 +6,24 @@
     "kokoro_voice": "af_heart"
   },
   "af-heart": {
-    "created": "20260907-114953",
+    "created": "20260907-132719",
     "seconds": 10.35,
     "text": "Docking clearance granted. Hold your approach vector and cut thrust at two hundred metres. Welcome to Meridian Port; the harbour master will be with you shortly.",
     "kokoro_voice": "af_heart",
+    "speed": 1
+  },
+  "af-bella": {
+    "created": "20260907-132741",
+    "seconds": 10.85,
+    "text": "Docking clearance granted. Hold your approach vector and cut thrust at two hundred metres. Welcome to Meridian Port; the harbour master will be with you shortly.",
+    "kokoro_voice": "af_bella",
+    "speed": 1
+  },
+  "af-river": {
+    "created": "20260907-161655",
+    "seconds": 2.4,
+    "text": "Docking clearance granted.",
+    "kokoro_voice": "af_river",
     "speed": 1
   }
 }
