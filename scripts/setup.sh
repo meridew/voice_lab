@@ -29,6 +29,8 @@ mkdir -p "$PROJECT/vendor"
 if [ ! -d "$PROJECT/vendor/seed-vc/.git" ]; then
   git clone --depth 1 https://github.com/Plachtaa/seed-vc "$PROJECT/vendor/seed-vc"
 fi
+# Local patch: inference_v2.py hard-codes float16, which is unreliable on the CPU.
+sed -i 's/^dtype = torch.float16$/dtype = torch.float16 if device.type != "cpu" else torch.float32  # voice-lab: fp16 is unreliable on CPU/' "$PROJECT/vendor/seed-vc/inference_v2.py"
 
 echo "== seed-vc runtime deps + app deps, resolved together so the pins hold"
 # Seed-VC pins minus CUDA nightlies, GUI and evaluation extras. soundfile 0.12.1 has no bundled libsndfile
