@@ -52,17 +52,22 @@ voice and mode or the effects that made them. The page, top to bottom:
 3. **The waveform**: record, play, crop the selection, import a file, or open the **library** (search, a filter
    per facet: Type, Stage, Voice, Mode, Effects; sorting; a bin on each row). The sliders icon beside record
    opens the microphone: input device and processing switches, remembered in the browser (see Microphone below).
-   A take saves itself as an original the moment it lands; a crop updates it.
+   A take saves itself as an original the moment it lands, replacing the previous take when that one was left
+   unnamed and unused; a crop updates it.
 4. **Convert** (voices): *Timbre* is the v1 F0 model, which keeps the melody of your delivery and moves its
    level onto the reference's, the reliable male-to-female path (real 123-139 Hz voice notes landed at 207-215
    Hz against a 209 Hz reference). *Emotion* is v2, which takes the reference's accent and emotion too, follows
    its range loosely, and is slower. Quality is the diffusion step count; Pitch nudges the level in semitones.
-   The bar follows the server's estimate; the result replaces the take in the waveform and saves itself.
+   The bar follows the server's estimate; the result replaces the take in the waveform and saves itself. Convert
+   goes quiet while the settings match what made the conversion showing, and a conversion that already exists
+   for this audio and these settings is opened instead of made again.
 5. **Effects**: add cards that run live while the waveform plays (pitch as tape speed, low-pass, high-pass,
    telephone, gain, distortion, hard clip, wavefolder, bitcrush, ring mod, compressor, delay, reverb, chorus,
    phaser, tremolo), each with bypass, move and remove. Reverse sits beside crop in the waveform's own row.
-   **Render** bakes the chain into the next step and saves it.
-6. **Undo** walks back through render, conversion, take. **Export** downloads what is showing as Opus 48 kbps
+   **Render** bakes the chain into the next step and saves it; it is off on top of a render (undo first), and a
+   render that already exists for this audio and chain is opened instead of made again.
+6. **Undo** walks back through render, conversion, crop and take: a conversion or render this session saved is
+   deleted again, and cropped audio comes back. **Export** downloads what is showing as Opus 48 kbps
    for the game (Chromium decodes it natively, about 20 KB per line) or MP3 128 kbps for sharing, 48 kHz
    mono, peak-normalised to −1 dBFS, encoded on demand; WAV masters stay in the library.
 

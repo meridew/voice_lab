@@ -6,7 +6,7 @@ Routes:  GET  /api/library                      voices and clips with their meta
          PATCH /api/clips/{kind}/{name}         rename or re-type a clip (form label, type); DELETE removes it
          POST /api/originals                    save a take (wav upload, name, type, mic)    PUT /api/originals/{name}  replace after a crop
          POST /api/convert                      start a voice conversion job on the uploaded take; GET /api/jobs/{id} for progress
-         POST /api/augmented                    save a render made in the browser (wav upload, name, type, effects)
+         POST /api/augmented                    save a render made in the browser (wav upload, name, type, effects, chain, source_hash)
          POST /api/voices                       synthesise a reference voice with Kokoro
          GET  /api/export/{kind}/{name}.{fmt}   deliver a clip as opus, mp3 or wav
          /clips/{kind}/{name}.wav               the audio files; /  the page
@@ -172,7 +172,7 @@ def api_original_update(name: str, file: Upload):
 @app.post("/api/convert")
 def api_convert(file: Upload, voice: Annotated[str, Form()], mode: Annotated[str, Form()] = "v1", steps: Annotated[int, Form()] = 15,
                 pitch: Annotated[int, Form()] = 0, name: Annotated[str, Form()] = "", type: Annotated[str, Form()] = "Voice",
-                source: Annotated[str, Form()] = ""):
+                source: Annotated[str, Form()] = "", source_hash: Annotated[str, Form()] = ""):
     reference = library.clip("voice", voice)
     if not reference or mode not in RATES:
         raise HTTPException(400, "no such voice or mode")
@@ -196,7 +196,8 @@ def api_convert(file: Upload, voice: Annotated[str, Form()], mode: Annotated[str
             stats = {"compute_s": round(time.time() - job["started"], 1), "take_s": round(take_s, 2), "voice_s": round(voice_s, 2),
                      "steps": int(steps), "cold": cold, "f0_in": result["f0_in"], "f0_out": result["f0_out"]}
             clip_name = library.save_augmented(out, out_sr, {"label": label, "type": type, "voice": voice, "mode": MODE_NAME[mode],
-                                                             "steps": int(steps), "pitch": int(pitch), "input": source, "stats": stats}, label=label)
+                                                             "steps": int(steps), "pitch": int(pitch), "input": source, "source_hash": source_hash,
+                                                             "stats": stats}, label=label)
             _remember(mode, stats)
             job["clip"] = _public(library.clip("augmented", clip_name))
             job["status"] = "done"
@@ -226,11 +227,13 @@ def api_job(job_id: str):
 
 @app.post("/api/augmented")
 def api_augmented(file: Upload, name: Annotated[str, Form()] = "", type: Annotated[str, Form()] = "Voice",
-                  effects: Annotated[str, Form()] = "", source: Annotated[str, Form()] = ""):
+                  effects: Annotated[str, Form()] = "", chain: Annotated[str, Form()] = "", source: Annotated[str, Form()] = "",
+                  source_hash: Annotated[str, Form()] = ""):
     with _uploaded(file) as path:
         audio, sr = load(path)
     label = (name or "").strip() or f"render · {effects or 'dry'}"
-    clip_name = library.save_augmented(audio, sr, {"label": label, "type": type, "effects": effects, "input": source}, label=label)
+    clip_name = library.save_augmented(audio, sr, {"label": label, "type": type, "effects": effects, "chain": chain, "input": source,
+                                                   "source_hash": source_hash}, label=label)
     return _public(library.clip("augmented", clip_name))
 
 

@@ -121,6 +121,7 @@ export const EFFECTS = {
 export const newStep = (type, id) => ({ id, type, on: true, params: Object.fromEntries(EFFECTS[type].params.map((p) => [p.key, p.value])), node: null })
 const on = (chain) => chain.filter((i) => i.on)
 export const chainName = (chain) => on(chain).map((i) => i.type).join('-')
+export const chainKey = (chain) => JSON.stringify(on(chain).map((i) => [i.type, i.params]))   // the chain with its settings, to tell renders apart
 export const chainRate = (chain) => on(chain).filter((i) => EFFECTS[i.type].rate).reduce((r, i) => r * 2 ** (i.params.st / 12), 1)
 const chainTail = (chain) => Math.max(0.05, ...on(chain).map((i) => EFFECTS[i.type].tail ?? 0))
 

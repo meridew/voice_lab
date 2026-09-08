@@ -2,7 +2,7 @@
 import { $, icons, setButton, toast, shell, segment, wavBlob, download, clipRow, CLIP_SORTS } from './lab.js'
 import { modal, dialog } from './modal.js'
 import { createEditor } from './editor.js'
-import { EFFECTS, newStep, chainName, chainRate, connectChain, renderChain, cardHtml } from './effects.js'
+import { EFFECTS, newStep, chainName, chainKey, chainRate, connectChain, renderChain, cardHtml } from './effects.js'
 import { api } from './api.js'
 
 shell('lab', `<div id="type" class="seg">
@@ -12,13 +12,17 @@ shell('lab', `<div id="type" class="seg">
 
 // ---- state
 let lib = { voices: [], clips: [], rates: {}, warm: {}, kokoro: {} }
-const history = []                                    // { label, clip?, rendered?, samples, sr }: the samples arrive when the waveform shows the entry
+const history = []                                    // { label, clip?, samples, sr, rendered?, made?, saved?, before? }
+// An entry's samples arrive when the waveform shows it. `made` is how it was made from the entry below ({ kind: 'convert',
+// voice, mode, steps, pitch } or { kind: 'render', chain }); `saved` marks a file this session created, which undo deletes
+// again; `before` holds the audio a crop or reverse replaced, which undo restores.
 const chain = []                                      // { id, type, params, on, node }
 let nextId = 1, ctx = null, source = null
 const top = () => history[history.length - 1]
 const takeName = () => $('name').value.trim()
 const fail = (e) => { console.error(e); toast(`Failed: ${e.message}`) }
 const clipRef = (t) => (t?.clip ? `${t.clip.kind}:${t.clip.name}` : '')
+const hashBlob = async (blob) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()))].map((b) => b.toString(16).padStart(2, '0')).join('')
 const DEFAULT_LINE = 'Docking clearance granted. Hold your approach vector and cut thrust at two hundred metres. Welcome to Meridian Port.'
 
 // ---- the switches: type tags what gets saved and hides the voice parts for SFX; mode picks the model
@@ -69,30 +73,39 @@ const estimateSeconds = () => {                        // the server's fit, from
   const r = lib.rates[mode.value], t = top(), steps = +$('steps').value
   return r && t?.samples ? r.fixed + r.per_step_second * steps * (t.samples.length / t.sr + (voice()?.seconds ?? 10)) + (lib.warm[mode.value] ? 0 : r.cold) : 0
 }
-const refresh = () => {
+const modeName = () => $('mode').querySelector('.active').textContent.trim()
+const convertSettings = () => ({ voice: voice()?.name, mode: modeName(), steps: +$('steps').value, pitch: +$('pitch').value })
+const sameConvert = (a, b) => ['voice', 'mode', 'steps', 'pitch'].every((k) => a[k] === b[k])
+const refresh = () => {                                // the buttons go quiet when pressing them would change nothing
   const t = top()
-  $('btn-go').disabled = !t?.samples || t.rendered || !lib.voices.length
-  $('btn-render').disabled = !t?.samples || !chain.some((i) => i.on)
-  $('btn-undo').disabled = history.length < 2
+  $('btn-go').disabled = !t?.samples || t.rendered || !lib.voices.length || (t.made?.kind === 'convert' && sameConvert(t.made, convertSettings()))
+  $('btn-render').disabled = !t?.samples || t.rendered || !chain.some((i) => i.on)
+  $('btn-undo').disabled = history.length < 2 && !t?.before?.length
   $('btn-game').disabled = $('btn-share').disabled = !t?.clip || history.length < 2
   $('est').textContent = t && !t.rendered && type.value === 'Voice' ? `~${(estimateSeconds() / 60).toFixed(1)} min` : ''
   wire()
 }
 let takeNext = false                                  // the next 'ready' is a fresh take (a recording or an import) to save
+let lastTake = null                                   // the take before this one: a retake replaces it while it is unnamed and unused
 editor.onReady(async (edited) => {
   const isTake = takeNext
   takeNext = false                                    // decided before any await, so a second 'ready' cannot save the take twice
   if (isTake) {
+    const prev = lastTake
     history.length = 0
-    const entry = { ...editor.samples(), label: takeName() || 'take' }
+    const entry = { ...editor.samples(), label: takeName() || 'take', named: !!takeName() }
     history.push(entry)
+    lastTake = entry
     try {
       entry.clip = await api.saveOriginal(wavBlob(entry.samples, entry.sr), takeName(), type.value, recorded ? editor.mic : null)
       entry.label = entry.clip.label
-      toast(`Saved original ${entry.clip.label} · ${type.value}`)
+      const replaced = prev?.clip && !prev.named && !prev.used
+      if (replaced) await api.deleteClip(prev.clip)
+      toast(`Saved original ${entry.label} · ${type.value}${replaced ? `, replacing ${prev.label}` : ''}`)
     } catch (e) { fail(e) }
   } else if (top()) {                                 // an entry shown from its file takes its samples here; a crop or reverse replaces them
     const t = top()
+    if (edited) (t.before ??= []).push({ samples: t.samples, sr: t.sr })
     if (edited || !t.samples) Object.assign(t, editor.samples())
     if (edited && t.clip?.kind === 'original') api.updateOriginal(t.clip.name, wavBlob(t.samples, t.sr)).catch(fail)
   }
@@ -100,7 +113,7 @@ editor.onReady(async (edited) => {
 })
 let recorded = false                                  // whether the pending take came from the microphone (its settings go in the sidecar)
 const fresh = (fromMic) => { takeNext = true; recorded = fromMic }
-const load = (entry) => editor.load(entry.clip?.url ?? wavBlob(entry.samples, entry.sr))
+const load = (entry) => editor.load(entry.samples ? wavBlob(entry.samples, entry.sr) : entry.clip.url)   // samples stay current after a crop; the file may be cached
 const show = async (entry) => { history.push(entry); await load(entry) }
 $('editor').addEventListener('recording', (e) => { if (e.detail) { fresh(true); history.length = 0; refresh() } })
 $('btn-import').onclick = () => $('file').click()
@@ -114,16 +127,18 @@ $('file').onchange = async (e) => {
 }
 
 // ---- the library: pick a clip into the waveform, or delete one
+const madeFrom = (c) => (c.voice ? { kind: 'convert', voice: c.voice, mode: c.mode, steps: c.steps, pitch: c.pitch } : c.effects ? { kind: 'render', chain: c.chain } : undefined)
 const pick = async (c) => {
   $('name').value = c.label
   if (c.type) { type.set(c.type); showVoiceParts() }
   history.length = 0
+  lastTake = null                                     // a clip from the library is not a take to replace
   if (c.kind === 'augmented' && c.input) {            // its original, when it is still in the library, sits behind the undo
     const [kind, name] = c.input.split(':')
     const o = lib.clips.find((x) => x.kind === kind && x.name === name)
     if (o) history.push({ label: o.label, clip: o })
   }
-  await show({ label: c.label, clip: c, rendered: !!c.effects })
+  await show({ label: c.label, clip: c, rendered: !!c.effects, made: madeFrom(c) })
 }
 const remove = async (c) => {
   await api.deleteClip(c)
@@ -180,21 +195,34 @@ $('btn-add').onclick = () => modal('Effects', Object.entries(EFFECTS).map(([key,
 
 // ---- convert (voice): the server runs the model; the bar follows its estimate; the result replaces the take
 $('steps').oninput = () => { $('steps-v').textContent = $('steps').value; refresh() }
-$('pitch').oninput = () => { const v = +$('pitch').value; $('pitch-v').textContent = `${v >= 0 ? '+' : ''}${v} st` }
+$('pitch').oninput = () => { const v = +$('pitch').value; $('pitch-v').textContent = `${v >= 0 ? '+' : ''}${v} st`; refresh() }
+/** The augmented clip already made from this audio (by content) that `match` accepts, so identical work is opened, not repeated. */
+const alreadyMade = async (blob, match) => {
+  const source_hash = await hashBlob(blob)
+  return { source_hash, existing: (await loadLibrary()).clips.find((c) => c.kind === 'augmented' && c.source_hash === source_hash && match(c)) }
+}
 $('btn-go').onclick = async () => {
-  const t = top()
+  if (top().made?.kind === 'convert' && history.length > 1) { history.pop(); await load(top()) }   // a new conversion of the take, not of the conversion
+  const t = top(), made = { kind: 'convert', ...convertSettings() }, blob = wavBlob(t.samples, t.sr)
+  history[0].used = true
   $('btn-go').disabled = true; $('progress-row').hidden = false; $('fill').style.width = '0%'
   try {
-    const { id } = await api.convert(wavBlob(t.samples, t.sr), { voice: voice().name, mode: mode.value, steps: $('steps').value,
-                                                                 pitch: $('pitch').value, name: takeName(), type: type.value, source: clipRef(t) })
-    const clip = await api.waitForJob(id, (job) => {
-      $('fill').style.width = `${job.progress * 100}%`
-      $('progress-text').textContent = job.status !== 'running' ? '' : job.eta > 0 ? `${job.eta.toFixed(0)} s` : '…'
-    })
-    lib.warm[mode.value] = true
-    api.library().then((l) => { lib.rates = l.rates }).catch(() => {})     // the server refits its estimate after every run
-    await show({ label: clip.label, clip })
-    toast(`Saved augmented ${clip.label} · ${type.value}`)
+    const { source_hash, existing } = await alreadyMade(blob, (c) => sameConvert(c, made))
+    if (existing) {
+      await show({ label: existing.label, clip: existing, made })
+      toast(`Already made: ${existing.label}`)
+    } else {
+      const { id } = await api.convert(blob, { voice: made.voice, mode: mode.value, steps: made.steps, pitch: made.pitch, name: takeName(),
+                                               type: type.value, source: clipRef(t), source_hash })
+      const clip = await api.waitForJob(id, (job) => {
+        $('fill').style.width = `${job.progress * 100}%`
+        $('progress-text').textContent = job.status !== 'running' ? '' : job.eta > 0 ? `${job.eta.toFixed(0)} s` : '…'
+      })
+      lib.warm[mode.value] = true
+      api.library().then((l) => { lib.rates = l.rates }).catch(() => {})     // the server refits its estimate after every run
+      await show({ label: clip.label, clip, made, saved: true })
+      toast(`Saved augmented ${clip.label} · ${type.value}`)
+    }
   } catch (e) { fail(e) }
   $('progress-row').hidden = true
   refresh()
@@ -202,18 +230,38 @@ $('btn-go').onclick = async () => {
 
 // ---- render the chain offline into the next entry, and keep it
 $('btn-render').onclick = async () => {
-  const t = top()
-  const entry = { samples: await renderChain(chain, t.samples, t.sr), sr: t.sr, label: `${t.label} · ${chainName(chain)}`, rendered: true }
-  await show(entry)
+  const t = top(), made = { kind: 'render', chain: chainKey(chain) }
+  history[0].used = true
   try {
-    entry.clip = await api.saveAugmented(wavBlob(entry.samples, entry.sr), { name: entry.label, type: type.value, effects: chainName(chain), source: clipRef(t) })
-    toast(`Saved augmented ${entry.clip.label} · ${type.value}`)
+    const { source_hash, existing } = await alreadyMade(wavBlob(t.samples, t.sr), (c) => c.chain === made.chain)
+    if (existing) {
+      await show({ label: existing.label, clip: existing, rendered: true, made })
+      toast(`Already made: ${existing.label}`)
+    } else {
+      const entry = { samples: await renderChain(chain, t.samples, t.sr), sr: t.sr, label: `${t.label} · ${chainName(chain)}`, rendered: true, made }
+      await show(entry)
+      entry.clip = await api.saveAugmented(wavBlob(entry.samples, entry.sr), { name: entry.label, type: type.value, effects: chainName(chain),
+                                                                               chain: made.chain, source: clipRef(t), source_hash })
+      entry.saved = true
+      toast(`Saved augmented ${entry.clip.label} · ${type.value}`)
+    }
   } catch (e) { fail(e) }
   refresh()
 }
 
 // ---- undo and export
-$('btn-undo').onclick = async () => { history.pop(); await load(top()) }
+/** Undo takes back the last thing done: a crop or reverse (the audio comes back, on disk too), else the top entry, deleting the file it saved for itself. */
+$('btn-undo').onclick = async () => {
+  const t = top()
+  if (t.before?.length) {
+    Object.assign(t, t.before.pop())
+    if (t.clip?.kind === 'original') api.updateOriginal(t.clip.name, wavBlob(t.samples, t.sr)).catch(fail)
+    return load(t)
+  }
+  const gone = history.pop()
+  if (gone.saved && gone.clip) api.deleteClip(gone.clip).then(() => toast(`Discarded ${gone.label}`)).catch(fail)
+  await load(top())
+}
 const deliver = (fmt, what) => {
   const t = top()
   if (!t?.clip) return

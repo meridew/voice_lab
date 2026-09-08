@@ -87,7 +87,7 @@ def _clip_at(kind: str, path: Path) -> dict:
                 "seconds": float(side.get("seconds") or _seconds(path)), "when": when(side.get("created", ""))}
     clip = {"kind": kind, "name": path.stem, "label": side.get("label") or path.stem.split("_", 1)[-1], "type": side.get("type", "Voice"),
             "seconds": float(side.get("seconds") or _seconds(path)), "when": when(path.stem)}
-    clip.update({key: side[key] for key in ("voice", "mode", "effects", "input") if side.get(key)})
+    clip.update({key: side[key] for key in ("voice", "mode", "effects", "input", "steps", "pitch", "chain", "source_hash") if side.get(key) not in (None, "")})
     return clip
 
 
