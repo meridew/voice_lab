@@ -57,8 +57,9 @@ voice and mode or the effects that made them. The page, top to bottom:
    its range loosely, and is slower. Quality is the diffusion step count; Pitch nudges the level in semitones.
    The bar follows the server's estimate; the result replaces the take in the waveform and saves itself.
 5. **Effects**: add cards that run live while the waveform plays (pitch as tape speed, low-pass, high-pass,
-   gain, distortion, delay, reverb, tremolo), each with bypass, move and remove. **Render** bakes the chain
-   into the next step and saves it.
+   telephone, gain, distortion, hard clip, wavefolder, bitcrush, ring mod, compressor, delay, reverb, chorus,
+   phaser, tremolo), each with bypass, move and remove. Reverse sits beside crop in the waveform's own row.
+   **Render** bakes the chain into the next step and saves it.
 6. **Undo** walks back through render, conversion, take. **Export** downloads what is showing as Opus 48 kbps
    for the game (Chromium decodes it natively, about 20 KB per line) or MP3 128 kbps for sharing, 48 kHz
    mono, peak-normalised to −1 dBFS, encoded on demand; WAV masters stay in the library.

@@ -91,6 +91,15 @@ MODE_NAME = {v: k for k, v in MODES.items()}
 app = FastAPI(title="Voice Lab", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def no_stale_page(request, call_next):
+    """The page's files always revalidate (ETags make that cheap); otherwise browsers keep old modules for minutes after an edit."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/clips/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 def _public(clip: dict) -> dict:
     return clip | {"url": f"/clips/{clip['kind']}/{clip['name']}.wav"}
 

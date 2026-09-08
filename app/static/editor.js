@@ -26,6 +26,7 @@ export function createEditor(mount, { record = false, empty = 'Nothing yet', ext
       ${record ? '<button class="btn-icon btn-accent" title="Record" aria-label="Record" data-rec><i data-lucide="mic"></i></button>' : ''}
       <button class="btn-icon" title="Play" aria-label="Play" disabled data-play><i data-lucide="play"></i></button>
       <button class="btn-icon" title="Crop to selection" aria-label="Crop to selection" disabled data-crop><i data-lucide="scissors"></i></button>
+      <button class="btn-icon" title="Reverse" aria-label="Reverse" disabled data-reverse><i data-lucide="flip-horizontal"></i></button>
       ${extra ? `<span class="ml-auto flex gap-2">${extra}</span>` : ''}
     </div>`
   const el = (name) => mount.querySelector(`[data-${name}]`)
@@ -58,7 +59,7 @@ export function createEditor(mount, { record = false, empty = 'Nothing yet', ext
     el('empty').hidden = true
     el('dur').textContent = fmt(ws.getDuration())
     el('cur').textContent = fmt(0)
-    el('play').disabled = false
+    el('play').disabled = el('reverse').disabled = false
     allowDrag(true)
     readyHandlers.forEach((fn) => fn())
   })
@@ -79,6 +80,10 @@ export function createEditor(mount, { record = false, empty = 'Nothing yet', ext
     const { samples, sr } = monoSamples(ws, region.start, region.end)
     await editor.load(wavBlob(samples, sr))
     toast(`Cropped to ${fmt(samples.length / sr)}`)
+  }
+  el('reverse').onclick = async () => {                 // the take itself, backwards: the page treats the reload like a crop
+    const { samples, sr } = monoSamples(ws)
+    await editor.load(wavBlob(samples.reverse(), sr))
   }
 
   if (record) {
@@ -103,7 +108,7 @@ export function createEditor(mount, { record = false, empty = 'Nothing yet', ext
         await editor.load(blob)
       }
       regions.clearRegions(); allowDrag(false)
-      el('play').disabled = true
+      el('play').disabled = el('reverse').disabled = true
       el('empty').textContent = 'Recording'; el('empty').hidden = false
       el('rec').innerHTML = '<span class="live inline-block h-3 w-3 rounded-sm bg-red-400"></span>'
       el('rec').title = 'Stop'

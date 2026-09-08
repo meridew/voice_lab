@@ -21,6 +21,14 @@ const hz = (v) => `${v} Hz`, two = (v) => v.toFixed(2), one = (v) => v.toFixed(1
 const cutoff = (min, max, value) => [{ key: 'freq', label: 'Cutoff', min, max, step: 10, value, fmt: hz },
                                      { key: 'q', label: 'Resonance', min: 0.1, max: 12, step: 0.1, value: 0.7, fmt: one }]
 const mix = (value) => ({ key: 'mix', label: 'Mix', min: 0, max: 1, step: 0.01, value, fmt: two })
+const lfoRate = (value) => ({ key: 'rate', label: 'Rate', min: 0.05, max: 10, step: 0.05, value, fmt: (v) => `${two(v)} Hz` })
+/** A WaveShaper with a curve computed from the parameters. */
+const shaper = (curve) => (ctx) => {
+  const n = ctx.createWaveShaper(); n.oversample = '4x'
+  return { input: n, output: n, set: (p) => { const c = new Float32Array(8192); for (let i = 0; i < c.length; i++) c[i] = curve(i / 4096 - 1, p); n.curve = c } }
+}
+/** An oscillator driving an AudioParam through a gain, for chorus, phaser and tremolo style modulation. */
+const lfo = (ctx, param) => { const osc = ctx.createOscillator(), depth = ctx.createGain(); osc.connect(depth).connect(param); osc.start(); return { osc, depth } }
 
 export const EFFECTS = {
   pitch: { label: 'Pitch', icon: 'arrow-up-down', category: 'Pitch', rate: true,
@@ -32,14 +40,59 @@ export const EFFECTS = {
     build: (ctx) => { const n = ctx.createGain(); return { input: n, output: n, set: (p) => { n.gain.value = 10 ** (p.db / 20) } } } },
   distortion: { label: 'Distortion', icon: 'flame', category: 'Drive',
     params: [{ key: 'drive', label: 'Drive', min: 1, max: 60, step: 1, value: 12, fmt: String }],
+    build: shaper((x, p) => { const k = p.drive / 4 + 0.1; return Math.tanh(k * x) / Math.tanh(k) }) },
+  clip: { label: 'Hard clip', icon: 'square', category: 'Drive',
+    params: [{ key: 'db', label: 'Threshold', min: -40, max: 0, step: 0.5, value: -6, fmt: (v) => `${v} dB` }],
+    build: shaper((x, p) => { const t = 10 ** (p.db / 20); return Math.max(-t, Math.min(t, x)) / t }) },
+  wavefold: { label: 'Wavefolder', icon: 'triangle', category: 'Drive',
+    params: [{ key: 'drive', label: 'Drive', min: 1, max: 12, step: 0.1, value: 3, fmt: one }],
+    build: shaper((x, p) => { const y = ((x * p.drive + 1) % 4 + 4) % 4; return Math.abs(y - 2) - 1 }) },
+  crush: { label: 'Bitcrush', icon: 'grid-2x2', category: 'Drive',
+    params: [{ key: 'bits', label: 'Bits', min: 2, max: 16, step: 0.5, value: 8, fmt: one }],
+    build: shaper((x, p) => { const levels = 2 ** p.bits / 2; return Math.round(x * levels) / levels }) },
+  ringmod: { label: 'Ring mod', icon: 'circle-dot', category: 'Drive',
+    params: [{ key: 'hz', label: 'Carrier', min: 1, max: 2000, step: 1, value: 60, fmt: hz }, mix(1)],
+    build: (ctx) => wetDry(ctx, (input, wet) => {
+      const g = ctx.createGain(); g.gain.value = 0                       // the carrier multiplies the signal through the gain
+      const { osc } = lfo(ctx, g.gain)
+      input.connect(g).connect(wet)
+      return (p) => { osc.frequency.value = p.hz }
+    }) },
+  compressor: { label: 'Compressor', icon: 'shrink', category: 'Drive',
+    params: [{ key: 'threshold', label: 'Threshold', min: -60, max: 0, step: 1, value: -18, fmt: (v) => `${v} dB` },
+             { key: 'ratio', label: 'Ratio', min: 1, max: 20, step: 0.5, value: 4, fmt: one },
+             { key: 'attack', label: 'Attack', min: 1, max: 200, step: 1, value: 5, fmt: (v) => `${v} ms` },
+             { key: 'release', label: 'Release', min: 10, max: 1000, step: 10, value: 120, fmt: (v) => `${v} ms` }],
     build: (ctx) => {
-      const n = ctx.createWaveShaper(); n.oversample = '4x'
-      return { input: n, output: n, set: (p) => {
-        const k = p.drive / 4 + 0.1, c = new Float32Array(4096)
-        for (let i = 0; i < 4096; i++) { const x = i / 2048 - 1; c[i] = Math.tanh(k * x) / Math.tanh(k) }
-        n.curve = c
-      } }
+      const n = ctx.createDynamicsCompressor()
+      return { input: n, output: n, set: (p) => { n.threshold.value = p.threshold; n.ratio.value = p.ratio; n.attack.value = p.attack / 1000; n.release.value = p.release / 1000 } }
     } },
+  phone: { label: 'Telephone', icon: 'phone', category: 'Tone',
+    params: [mix(1)],
+    build: (ctx) => wetDry(ctx, (input, wet) => {
+      const hp = ctx.createBiquadFilter(), lp = ctx.createBiquadFilter(), grit = ctx.createWaveShaper()
+      hp.type = 'highpass'; hp.frequency.value = 300; lp.type = 'lowpass'; lp.frequency.value = 3400
+      grit.curve = Float32Array.from({ length: 4096 }, (_, i) => Math.tanh(3 * (i / 2048 - 1)) / Math.tanh(3))
+      input.connect(hp).connect(lp).connect(grit).connect(wet)
+      return () => {}
+    }) },
+  chorus: { label: 'Chorus', icon: 'waves', category: 'Motion',
+    params: [lfoRate(1), { key: 'depth', label: 'Depth', min: 0, max: 10, step: 0.1, value: 2.5, fmt: (v) => `${one(v)} ms` }, mix(0.5)],
+    build: (ctx) => wetDry(ctx, (input, wet) => {
+      const d = ctx.createDelay(0.1); d.delayTime.value = 0.02
+      const { osc, depth } = lfo(ctx, d.delayTime)
+      input.connect(d).connect(wet)
+      return (p) => { osc.frequency.value = p.rate; depth.gain.value = p.depth / 1000 }
+    }) },
+  phaser: { label: 'Phaser', icon: 'orbit', category: 'Motion',
+    params: [lfoRate(0.5), { key: 'depth', label: 'Depth', min: 0, max: 1, step: 0.01, value: 0.7, fmt: two }, mix(0.5)],
+    build: (ctx) => wetDry(ctx, (input, wet) => {
+      const stages = [0, 1, 2, 3].map(() => { const f = ctx.createBiquadFilter(); f.type = 'allpass'; f.frequency.value = 800; f.Q.value = 0.7; return f })
+      const { osc, depth } = lfo(ctx, stages[0].frequency)
+      stages.slice(1).forEach((f) => depth.connect(f.frequency))
+      stages.reduce((prev, f) => prev.connect(f), input).connect(wet)
+      return (p) => { osc.frequency.value = p.rate; depth.gain.value = 600 * p.depth }
+    }) },
   delay: { label: 'Delay', icon: 'repeat', category: 'Space', tail: 2,
     params: [{ key: 'time', label: 'Time', min: 0.02, max: 1.5, step: 0.01, value: 0.3, fmt: (v) => `${two(v)} s` },
              { key: 'feedback', label: 'Feedback', min: 0, max: 0.9, step: 0.01, value: 0.35, fmt: two }, mix(0.3)],
@@ -56,12 +109,11 @@ export const EFFECTS = {
       return (p) => { if (p.decay !== decay) { decay = p.decay; c.buffer = impulse(ctx, decay) } }
     }) },
   tremolo: { label: 'Tremolo', icon: 'activity', category: 'Motion',
-    params: [{ key: 'rate', label: 'Rate', min: 0.5, max: 20, step: 0.1, value: 5, fmt: (v) => `${one(v)} Hz` },
-             { key: 'depth', label: 'Depth', min: 0, max: 1, step: 0.01, value: 0.6, fmt: two }],
+    params: [lfoRate(5), { key: 'depth', label: 'Depth', min: 0, max: 1, step: 0.01, value: 0.6, fmt: two }],
     build: (ctx) => {
-      const g = ctx.createGain(), lfo = ctx.createOscillator(), depth = ctx.createGain()
-      lfo.connect(depth).connect(g.gain); lfo.start()
-      return { input: g, output: g, set: (p) => { lfo.frequency.value = p.rate; depth.gain.value = p.depth / 2; g.gain.value = 1 - p.depth / 2 } }
+      const g = ctx.createGain()
+      const { osc, depth } = lfo(ctx, g.gain)
+      return { input: g, output: g, set: (p) => { osc.frequency.value = p.rate; depth.gain.value = p.depth / 2; g.gain.value = 1 - p.depth / 2 } }
     } },
 }
 
