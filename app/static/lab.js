@@ -38,12 +38,16 @@ export function shell(page, right = '') {
   icons()
 }
 
-/** A clip as the lists show it: label, meta, the sort keys, and facets Type, Stage, Voice, Mode, Effects. */
-export const clipRow = (c) => ({
-  label: c.label, meta: `${c.when} · ${c.seconds.toFixed(1)} s`, when: c.when, seconds: c.seconds,
-  facets: { Type: c.type, Stage: { original: 'Original', augmented: 'Augmented', voice: 'Reference' }[c.kind],
-            ...(c.voice ? { Voice: c.voice, Mode: c.mode } : {}), ...(c.effects ? { Effects: c.effects } : {}) },
-})
+/** A clip as the lists show it: the label, one tag, a short meta (the full date on hover), sort keys, and the filter facets. */
+export const clipRow = (c) => {
+  const day = c.when ? new Date(c.when).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : ''
+  return {
+    clip: c, label: c.label, tag: c.kind === 'voice' ? 'Reference' : c.type, when: c.when, seconds: c.seconds,
+    meta: `${day ? `${day} · ` : ''}${c.seconds.toFixed(1)} s`, title: c.when, text: c.when,
+    facets: { Type: c.type, Stage: { original: 'Original', augmented: 'Augmented', voice: 'Reference' }[c.kind],
+              ...(c.voice ? { Voice: c.voice, Mode: c.mode } : {}), ...(c.effects ? { Effects: c.effects } : {}) },
+  }
+}
 export const CLIP_SORTS = [
   { label: 'Newest', by: (a, b) => b.when.localeCompare(a.when) },
   { label: 'Oldest', by: (a, b) => a.when.localeCompare(b.when) },

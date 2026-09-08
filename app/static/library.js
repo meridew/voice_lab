@@ -1,13 +1,13 @@
 // The library page: every original, augmented clip and reference voice, filtered like the lab's picker. Each row plays,
 // renames (click the name), flips Voice and SFX (click the tag), exports for the game or for sharing, and deletes.
 import { $, toast, shell, clipRow, CLIP_SORTS } from './lab.js'
-import { filterList, tags } from './list.js'
+import { filterList } from './list.js'
 import { api } from './api.js'
 
 shell('library')
 const fail = (e) => { console.error(e); toast(`Failed: ${e.message}`) }
 const lib = await api.library()
-const rows = [...lib.clips, ...lib.voices].map((c) => ({ ...clipRow(c), clip: c }))
+const rows = [...lib.clips, ...lib.voices].map(clipRow)
 const editable = (r) => r.clip.kind !== 'voice'          // a voice is named by its file and is always a Voice
 
 // ---- playback: one player; the row that is playing shows pause
@@ -22,14 +22,14 @@ const play = async (r) => {
   list.render()
 }
 
-// ---- the rows
+// ---- the rows: play, the name, the Type tag, meta, then actions that show under the pointer
 const list = filterList($('library'), rows, { sorts: CLIP_SORTS, row: (r, i) => {
-  const state = r === playingRow ? ['pause', 'Pause'] : ['play', 'Play']
+  const [icon, title] = r === playingRow ? ['pause', 'Pause'] : ['play', 'Play']
   return `<li class="line">
-    <button class="btn-icon btn-sm" title="${state[1]}" aria-label="${state[1]}" data-play="${i}"><i data-lucide="${state[0]}"></i></button>
+    <button class="btn-icon btn-sm" title="${title}" aria-label="${title}" data-play="${i}"><i data-lucide="${icon}"></i></button>
     <span class="name" ${editable(r) ? `data-name="${i}" title="Rename"` : ''}>${r.label}</span>
-    ${editable(r) ? `<button class="tag" title="Voice or SFX" data-type="${i}">${r.clip.type}</button>` : ''}${tags(r, editable(r) ? ['Type'] : [])}
-    <span class="meta mono">${r.meta}</span>
+    ${editable(r) ? `<button class="tag" title="Voice or SFX" data-type="${i}">${r.clip.type}</button>` : `<span class="tag">${r.tag}</span>`}
+    <span class="meta mono" title="${r.title}">${r.meta}</span>
     <a class="btn-icon btn-sm" title="Export for the game (Opus)" aria-label="Export for the game" href="${api.exportUrl(r.clip, 'opus')}" download><i data-lucide="gamepad-2"></i></a>
     <a class="btn-icon btn-sm" title="Share (MP3)" aria-label="Share" href="${api.exportUrl(r.clip, 'mp3')}" download><i data-lucide="share-2"></i></a>
     <button class="btn-icon btn-sm" title="Delete" aria-label="Delete" data-remove="${i}"><i data-lucide="trash-2"></i></button>
@@ -37,7 +37,7 @@ const list = filterList($('library'), rows, { sorts: CLIP_SORTS, row: (r, i) => 
 } })
 
 const update = async (r, fields) => {
-  try { r.clip = await api.updateClip(r.clip, fields); Object.assign(r, clipRow(r.clip)) } catch (e) { fail(e) }
+  try { Object.assign(r, clipRow(await api.updateClip(r.clip, fields))) } catch (e) { fail(e) }
   list.render()
 }
 const rename = (r, span) => {                            // the name becomes a field: Enter or leaving saves, Escape cancels

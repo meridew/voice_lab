@@ -49,8 +49,8 @@ voice and mode or the effects that made them. The page, top to bottom:
 1. **Voice / SFX** switch: tags everything saved from here on; SFX hides the voice parts.
 2. **Voice** select with a play button and a plus that makes a new reference voice with Kokoro, and an
    optional **Name**.
-3. **The waveform**: record, play, crop the selection, import a file, or open the **library** (search, chip
-   filters for Type, Stage, Voice, Mode, Effects, sorting, and a bin on each row). The sliders icon beside record
+3. **The waveform**: record, play, crop the selection, import a file, or open the **library** (search, a filter
+   per facet: Type, Stage, Voice, Mode, Effects; sorting; a bin on each row). The sliders icon beside record
    opens the microphone: input device and processing switches, remembered in the browser (see Microphone below).
    A take saves itself as an original the moment it lands; a crop updates it.
 4. **Convert** (voices): *Timbre* is the v1 F0 model, which keeps the melody of your delivery and moves its
@@ -67,7 +67,7 @@ voice and mode or the effects that made them. The page, top to bottom:
    mono, peak-normalised to −1 dBFS, encoded on demand; WAV masters stay in the library.
 
 The **Library** page (the list icon in the header) shows every original, augmented clip and reference voice with the
-same search, chips and sorts as the picker. On each row: play, click the name to rename, click the Type tag to flip
+same search, filters and sorts as the picker. On each row: play, click the name to rename, click the Type tag to flip
 Voice and SFX, export for the game or for sharing, delete.
 
 Voices are synthesised with Kokoro (nobody's real voice): `bf_alice` and

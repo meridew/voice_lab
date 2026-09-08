@@ -1,6 +1,6 @@
 // Overlays: a filterable list (the library picker, the effects) and a small form dialog (a new voice, the microphone).
 import { icons } from './lab.js'
-import { filterList, tags } from './list.js'
+import { filterList } from './list.js'
 
 const open = (title, body, extraClass = '') => {
   const backdrop = document.createElement('div')
@@ -20,13 +20,15 @@ const open = (title, body, extraClass = '') => {
 }
 
 /**
- * A modal list in a frame that never changes size: `rows` are { label, meta?, facets?, pick, remove? } (filterList does
- * the filtering). Picking closes it, as do Escape and the backdrop; a row with `remove` gets a bin that removes it in place.
+ * A modal list in a frame that never changes size: `rows` are { label, tag?, meta?, title?, facets?, pick, remove? }
+ * (filterList does the filtering), one line each. Picking closes it, as do Escape and the backdrop; a row with `remove`
+ * gets a bin that removes it in place.
  */
 export function modal(title, rows, { sorts = [] } = {}) {
   const { backdrop, close, el } = open(title, '<div class="frame" data-body></div>')
   const list = filterList(el('body'), rows, { sorts, row: (r, i) => `<li class="flex items-center gap-1">
-      <button class="row" data-row="${i}"><span>${r.label}</span>${tags(r)}<span class="meta mono">${r.meta ?? ''}</span></button>
+      <button class="row" data-row="${i}"><span class="name">${r.label}</span>${r.tag ? `<span class="tag">${r.tag}</span>` : ''}
+        <span class="meta mono" title="${r.title ?? ''}">${r.meta ?? ''}</span></button>
       ${r.remove ? `<button class="btn-icon btn-sm" title="Delete" aria-label="Delete" data-remove="${i}"><i data-lucide="trash-2"></i></button>` : ''}
     </li>` })
   backdrop.onclick = async (e) => {

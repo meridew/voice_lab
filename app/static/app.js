@@ -174,7 +174,7 @@ $('chain').onclick = (e) => {
   renderChainCards()
 }
 $('btn-add').onclick = () => modal('Effects', Object.entries(EFFECTS).map(([key, e]) => ({
-  label: e.label, facets: { Category: e.category },
+  label: e.label, tag: e.category, facets: { Category: e.category },
   pick: () => { chain.push(newStep(key, nextId++)); live(); renderChainCards() },
 })))
 
