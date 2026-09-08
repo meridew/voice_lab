@@ -1,8 +1,10 @@
 # Voice Lab
 
-Local audio lab for Supreme Perilous voices and sound design. Record or import a take, convert it to a
-synthetic character voice, chain DSP effects, and keep everything in a library of presets and renders.
-Nothing leaves the laptop after the one-time model download.
+Local audio lab for Supreme Perilous voices and sound design: one page, one waveform. Tag the take Voice
+or SFX, record or import it, crop it, convert it to a synthetic character voice, add effects that run live
+while it plays, render, and export Opus for the game or MP3 for sharing. Originals and augmented clips save
+themselves into a library you can filter by type, stage, voice, mode and effects. Nothing leaves the laptop
+after the one-time model download.
 
 Runs on the CPU inside WSL2 (Ubuntu 24.04, ARM64). The Snapdragon has no CUDA, so this is offline
 conversion, not real-time: measured about 9x real time at 15 diffusion steps (a 7 s take converts in
@@ -11,11 +13,17 @@ a minute once the models are warm); time scales with the step count, so use 8-10
 ## Layout
 
 ```
-app/main.py              Gradio UI (Sources, Voices, Convert, Effects chain, Library)
-app/effects/             effect registry: voice_convert.py (Seed-VC v1/v2), tts.py (Kokoro), dsp.py (pedalboard + numpy)
-app/library.py           on-disk library: sources/, library/voices, library/presets, library/renders (+ json sidecars)
-scripts/setup.sh         one-time WSL2 setup (uv-managed Python 3.10, torch CPU, Seed-VC clone, deps); no sudo
-scripts/run.sh           launch the UI
+app/server.py            FastAPI: the page, the JSON API (library, originals, convert jobs, renders, voices, exports), the audio files
+app/jobs.py              the model work, run in one long-lived worker process so the server keeps answering
+app/static/              the page: index.html (the flow), lab.js (editor, library modal, shell), effects.js (Web Audio chain), api.js, lab.css
+app/voice_convert.py     Seed-VC v1 and v2 on the CPU, warm in the worker, with the ARM64 workarounds
+app/tts.py               Kokoro reference voices
+app/library.py           on-disk library: sources/ and library/renders (wav + json sidecars), library/voices, export/
+docs/                    design notes (sound-design-surface.md: the research behind the effects)
+scripts/setup.sh         one-time WSL2 setup (uv-managed Python 3.10, torch CPU, Seed-VC clone and patches, deps); no sudo
+scripts/run.sh           launch the server
+scripts/check.sh         the verification kernel: ruff and the API in-process (no models, no UI)
+scripts/convert-check.sh a real conversion against the running server, proving it keeps answering meanwhile
 vendor/seed-vc           Seed-VC source (cloned by setup, git-ignored)
 ```
 
@@ -31,40 +39,62 @@ checkpoints from Hugging Face into `~/.cache/huggingface` inside WSL.
 
 ## Workflow
 
-1. **Voices**: synthesise a reference voice with Kokoro (a female `af_*`/`bf_*` voice, 10-20 seconds of
-   text). This becomes the character; it is nobody's real voice.
-2. **Sources**: record a take in the browser or upload a wav. Record dry and close, and deliver lines
-   lighter and higher than your natural voice: the model keeps your performance.
-3. **Convert**: pick the take and the voice. v1 base model re-synthesises pitch in the target's range;
-   tick *keep my pitch contour* to use the F0 model with an explicit semitone shift (try 6-10). v2 also
-   converts accent and emotion but is slower. Every conversion is saved as a render with a sidecar that
-   records the exact chain and parameters.
-4. **Effects chain**: build a chain of effects on any source, render or voice, and save it as a preset.
-   The DSP effects (bitcrush, sample-rate reduce, wavefolder, ring modulator, filters, delay, reverb,
-   telephone codec, ...) are the start of the sound-design side: record real-world sounds and mangle
-   them into analogue-flavoured digital synth material.
-5. **Library**: play, annotate and delete renders.
+One library, two kinds of clip: **originals** (recordings and imports) and **augmented** (conversions and
+renders), plus reference **voices**. Every clip carries its type (Voice or SFX), and augmented clips carry the
+voice and mode or the effects that made them. The page, top to bottom:
+
+1. **Voice / SFX** switch: tags everything saved from here on; SFX hides the voice parts.
+2. **Voice** select with a play button, and an optional **Name**.
+3. **The waveform**: record, play, crop the selection, import a file, or open the **library** (search, chip
+   filters for Type, Stage, Voice, Mode, Effects, and sorting). A take saves itself as an original the moment
+   it lands; a crop updates it.
+4. **Convert** (voices): *Timbre* is the v1 F0 model, which keeps the melody of your delivery and moves its
+   level onto the reference's, the reliable male-to-female path (real 123-139 Hz voice notes landed at 207-215
+   Hz against a 209 Hz reference). *Emotion* is v2, which takes the reference's accent and emotion too, follows
+   its range loosely, and is slower. Quality is the diffusion step count; Pitch nudges the level in semitones.
+   The bar follows the server's estimate; the result replaces the take in the waveform and saves itself.
+5. **Effects**: add cards that run live while the waveform plays (pitch as tape speed, low-pass, high-pass,
+   gain, distortion, delay, reverb, tremolo), each with bypass, move and remove. **Render** bakes the chain
+   into the next step and saves it.
+6. **Undo** walks back through render, conversion, take. **Export** delivers what is showing as Opus 48 kbps
+   for the game (Chromium decodes it natively, about 20 KB per line) or MP3 128 kbps for sharing, 48 kHz
+   mono, peak-normalised to −1 dBFS. WAV masters stay in the library.
+
+Voices are synthesised with Kokoro through `POST /api/voices` (nobody's real voice): `bf_alice` and
+`af_jessica` read at about 213 Hz, `af_bella` 209, `af_sarah` 204, `af_heart` 202; the breathy `af_nicole` and
+`af_sky` sit near 157 Hz. Variation at play time (a little random pitch and gain per trigger) is the game
+engine's job, as in Wwise and FMOD, so the lab does not generate variation batches.
 
 ## Effects
 
-An effect is one function decorated with `@effect(name, label, category, params)` in `app/effects/`
-that maps `(audio, sr, **params) -> (audio, sr)`. Chains are JSON lists of `{name, params}`, so
-presets are plain files and renders are reproducible.
+The chain runs in the browser with Web Audio (`app/static/effects.js`): each effect builds the same node graph
+for live playback and for the offline render, so what you hear is what gets saved. Pitch is playback rate,
+tape-style. The Python sound-design vocabulary researched in `docs/sound-design-surface.md` (layering,
+granular, spectral freeze, paulstretch, tape wobble, envelope filter, cleanup) was implemented on pedalboard
+and numpy, then removed from the tree in the 2026-09-08 cleanup as unused by the page; it is in git history
+for when the chain needs more than Web Audio nodes can do.
 
 ## Measured on this laptop (Snapdragon X2 Elite Extreme, CPU only, 2026-09-07)
 
 A 6.8 s male stand-in take (Kokoro `am_adam`, median pitch 103 Hz) converted to a Kokoro `af_heart`
-reference (198 Hz) at 15 diffusion steps:
+reference (198 Hz) at 15 diffusion steps, models warm unless noted:
 
-| Path | Output | Median pitch | Time |
+| Path | oneDNN off | oneDNN on (current default) | Output |
 | --- | --- | --- | --- |
-| v1 base, cold (first conversion in the app, loads models) | 22.05 kHz | 203 Hz | 82 s |
-| v1 base, warm | 22.05 kHz | 199 Hz | 61 s |
-| v1 F0 model, auto-match, 0 st (fresh process) | 44.1 kHz | 201 Hz | 86 s |
+| v1 base, cold (first conversion, loads models) | 74 s | 48 s | 22.05 kHz, ~200 Hz |
+| v1 base, warm | 58 s | 36 s | 22.05 kHz, ~200 Hz |
+| v2, style off, warm | 49 s | 34 s | 22.05 kHz, ~200 Hz |
+| v2, accent and emotion, warm | 81 s | 73 s | 22.05 kHz, ~190 Hz |
+| v1 F0 model, auto-match, 0 st (fresh process, oneDNN off) | 86 s | | 44.1 kHz, 201 Hz |
 
-So roughly 9x real time at 15 steps with the models warm. Cheaper knobs in order: fewer diffusion
-steps, shorter takes, then (untried) bfloat16 autocast on the Oryon cores or the Seed-VC "tiny"
-real-time checkpoint at lower quality. See `scripts/smoke.sh` and `scripts/warmprobe.sh`.
+So about 5x real time for v1 at 15 steps (the F0 model the app uses runs at 44.1 kHz and costs about twice
+that). oneDNN was originally disabled for the whole process because its aarch64 JIT crashes; the crash turned
+out to be one depthwise conv1d in BigVGAN's anti-aliasing filter, which setup.sh now patches to bypass oneDNN
+on its own. v2's autoregressive stage stays on the native kernels (one run under oneDNN produced a runaway
+silent output) and the app retries once if a v2 result runs away. Set `VOICE_LAB_ONEDNN=0` to revert to the
+all-native path. Cheaper knobs in order: fewer diffusion steps, shorter takes, then (untried) bfloat16 autocast
+on the Oryon cores or the Seed-VC "tiny" real-time checkpoint. The one-off scripts behind these numbers live
+in git history (before the cleanup of 2026-09-08).
 
 ## ARM64 notes (what setup.sh works around)
 
@@ -72,12 +102,16 @@ real-time checkpoint at lower quality. See `scripts/smoke.sh` and `scripts/warmp
 - `soundfile` 0.12.1 has no bundled libsndfile on aarch64; 0.13 does.
 - Seed-VC pins CUDA nightlies and float16; CPU wheels are installed instead, the in-process wrapper
   gets a CPU-safe autocast, and `inference_v2.py` is patched to float32 on CPU.
-- oneDNN's aarch64 JIT fails inside these models ("Xbyak ... illegal immediate parameter"); the
-  mkldnn backend is disabled so PyTorch's native kernels run.
+- oneDNN's aarch64 JIT fails on BigVGAN's depthwise anti-aliasing conv1d ("Xbyak ... illegal immediate
+  parameter"); that one filter is patched to bypass oneDNN, everything else keeps the fast kernels.
+- Seed-VC v2 only hands its result back through its MP3 streaming path, so an ffmpeg (imageio-ffmpeg's
+  static binary) is put on PATH; v2 is kept warm in-process because reloading its 1.2 GB of checkpoints over
+  the Windows filesystem cost more than a conversion.
 - Invoke `wsl` from PowerShell, not Git Bash, which rewrites `/mnt/c` paths.
 
 ## Notes
 
-- Models: Seed-VC (GPL-3), Kokoro-82M (Apache-2), pedalboard (GPL-3), Gradio (Apache-2).
+- Models and libraries: Seed-VC (GPL-3), Kokoro-82M (Apache-2), pedalboard (GPL-3), FastAPI and uvicorn (MIT/BSD),
+  WaveSurfer.js (BSD-3), Lucide (ISC).
 - Cloning a specific real person's voice needs their consent; the intended use is synthetic voices.
 - Uploads of mp3/webm need ffmpeg; `imageio-ffmpeg` provides a static binary when its wheel is available.

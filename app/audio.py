@@ -1,9 +1,32 @@
 """Audio I/O helpers. Everything internal is float32 mono in [-1, 1] plus a sample rate."""
 from __future__ import annotations
 
+import os
+import shutil
+from pathlib import Path
+
+import librosa
 import numpy as np
 import soundfile as sf
-import librosa
+
+
+def ensure_ffmpeg() -> str | None:
+    """Put an ffmpeg on PATH without apt (imageio-ffmpeg bundles a static binary) and return its path."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        shim = Path.home() / ".cache" / "voice-lab" / "bin"
+        shim.mkdir(parents=True, exist_ok=True)
+        link = shim / "ffmpeg"
+        if not link.exists():
+            link.symlink_to(exe)
+        os.environ["PATH"] = f"{shim}{os.pathsep}{os.environ.get('PATH', '')}"
+        return str(link)
+    except Exception:
+        return None
 
 
 def load(path: str, sr: int | None = None) -> tuple[np.ndarray, int]:

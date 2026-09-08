@@ -31,21 +31,38 @@ if [ ! -d "$PROJECT/vendor/seed-vc/.git" ]; then
 fi
 # Local patch: inference_v2.py hard-codes float16, which is unreliable on the CPU.
 sed -i 's/^dtype = torch.float16$/dtype = torch.float16 if device.type != "cpu" else torch.float32  # voice-lab: fp16 is unreliable on CPU/' "$PROJECT/vendor/seed-vc/inference_v2.py"
+# Local patch: oneDNN's aarch64 JIT rejects BigVGAN's depthwise anti-aliasing conv1d ("illegal immediate parameter").
+# Bypassing oneDNN for that one op lets the rest of the models keep the fast kernels (VOICE_LAB_ONEDNN=1).
+python - "$PROJECT/vendor/seed-vc/modules/bigvgan/alias_free_activation/torch/filter.py" <<'EOF'
+import sys
+path = sys.argv[1]
+src = open(path, encoding="utf-8").read()
+old = "        out = F.conv1d(x, self.filter.expand(C, -1, -1), stride=self.stride, groups=C)\n"
+new = ("        # voice-lab: oneDNN's aarch64 JIT rejects this depthwise conv (\"illegal immediate parameter\"); bypass it here only.\n"
+       "        with torch.backends.mkldnn.flags(enabled=False):\n"
+       "            out = F.conv1d(x, self.filter.expand(C, -1, -1), stride=self.stride, groups=C)\n")
+if old in src and "voice-lab" not in src:
+    open(path, "w", encoding="utf-8").write(src.replace(old, new))
+    print("patched", path)
+EOF
 
 echo "== seed-vc runtime deps + app deps, resolved together so the pins hold"
 # Seed-VC pins minus CUDA nightlies, GUI and evaluation extras. soundfile 0.12.1 has no bundled libsndfile
-# for aarch64 Linux, 0.13 does and is API-compatible. Gradio 5 is the API this UI is written against.
+# for aarch64 Linux, 0.13 does and is API-compatible. FastAPI serves the page and the API.
 uv pip install \
   accelerate "scipy==1.13.1" "librosa==0.10.2" "huggingface-hub>=0.28.1" "munch==4.0.0" "einops==0.8.0" \
   "descript-audio-codec==1.0.0" "pydub==0.25.1" "transformers==4.46.3" \
   "numpy==1.26.4" "hydra-core==1.3.2" pyyaml python-dotenv "soundfile>=0.13.1" \
-  kokoro pedalboard "gradio>=5.0,<6"
+  kokoro pedalboard \
+  noisereduce pyloudnorm soxr fastapi uvicorn python-multipart
 uv pip install imageio-ffmpeg || echo "(imageio-ffmpeg unavailable; mp3/webm imports will need ffmpeg)"
+echo "== dev tools (the checks in scripts/)"
+uv pip install ruff httpx
 
 echo "== sanity"
 python - <<'EOF'
-import torch, torchaudio, numpy, librosa, gradio, pedalboard, kokoro
+import torch, torchaudio, numpy, librosa, fastapi, pedalboard, kokoro
 print("torch", torch.__version__, "threads", torch.get_num_threads(), "cuda", torch.cuda.is_available())
-print("numpy", numpy.__version__, "librosa", librosa.__version__, "gradio", gradio.__version__, "pedalboard", pedalboard.__version__)
+print("numpy", numpy.__version__, "librosa", librosa.__version__, "fastapi", fastapi.__version__, "pedalboard", pedalboard.__version__)
 EOF
 echo "== done: $VENV"

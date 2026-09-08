@@ -5,25 +5,25 @@
     "text": "Docking clearance granted. Hold your approach vector and cut thrust at two hundred metres. Welcome to Meridian Port; the harbour master will be with you shortly.",
     "kokoro_voice": "af_heart"
   },
-  "af-heart": {
-    "created": "20260907-132719",
-    "seconds": 10.35,
-    "text": "Docking clearance granted. Hold your approach vector and cut thrust at two hundred metres. Welcome to Meridian Port; the harbour master will be with you shortly.",
-    "kokoro_voice": "af_heart",
-    "speed": 1
+  "siren-whisper": {
+    "created": "20260907-210734",
+    "seconds": 19.75,
+    "text": "Well now. Look who finally came back to me. Kill the engines, captain, and stay a while. The stars can wait. I have been so very patient, and I do not intend to share you tonight.",
+    "kokoro_voice": "af_nicole",
+    "speed": 0.85
   },
-  "af-bella": {
-    "created": "20260907-132741",
-    "seconds": 10.85,
-    "text": "Docking clearance granted. Hold your approach vector and cut thrust at two hundred metres. Welcome to Meridian Port; the harbour master will be with you shortly.",
+  "siren-warm": {
+    "created": "20260907-210741",
+    "seconds": 13.35,
+    "text": "Well now. Look who finally came back to me. Kill the engines, captain, and stay a while. The stars can wait. I have been so very patient, and I do not intend to share you tonight.",
     "kokoro_voice": "af_bella",
-    "speed": 1
+    "speed": 0.85
   },
-  "af-river": {
-    "created": "20260907-161655",
-    "seconds": 2.4,
-    "text": "Docking clearance granted.",
-    "kokoro_voice": "af_river",
-    "speed": 1
+  "siren-alice": {
+    "created": "20260907-212438",
+    "seconds": 11.9,
+    "text": "Well now. Look who finally came back to me. Kill the engines, captain, and stay a while. The stars can wait. I have been so very patient, and I do not intend to share you tonight.",
+    "kokoro_voice": "bf_alice",
+    "speed": 0.85
   }
 }

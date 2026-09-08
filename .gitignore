@@ -1,5 +1,7 @@
 vendor/
 logs/
+export/
+.ruff_cache/
 library/renders/
 library/voices/*.wav
 sources/
