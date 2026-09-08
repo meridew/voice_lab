@@ -34,14 +34,6 @@ export function shell(right = '') {
   icons()
 }
 
-/** Decode any audio file into mono samples plus the sample rate, through one shared decoder (hardware contexts are capped). */
-let decoder = null
-export async function decodeFile(url) {
-  decoder ??= new OfflineAudioContext(1, 1, 48000)
-  const data = await decoder.decodeAudioData(await (await fetch(url)).arrayBuffer())
-  return { samples: data.getChannelData(0).slice(), sr: data.sampleRate }
-}
-
 /** Mono samples of a WaveSurfer's loaded audio between two times (seconds), plus the sample rate. */
 export function monoSamples(ws, start, end) {
   const data = ws.getDecodedData(), sr = data.sampleRate

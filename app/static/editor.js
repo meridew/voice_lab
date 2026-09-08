@@ -11,7 +11,8 @@ const ENCODE = { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 128000 
 
 /**
  * Renders into `mount`; `extra` is HTML for page-specific buttons at the right end of the transport row.
- * Returns { ws, load, samples, onReady, hasAudio }. With `record: true`, `mount` gets a 'recording' event (detail true/false).
+ * Returns { ws, load, samples, onReady, hasAudio }; onReady's callback gets `edited`, true when the reload was a crop or reverse
+ * made here. With `record: true`, `mount` gets a 'recording' event (detail true/false).
  */
 export function createEditor(mount, { record = false, empty = 'Nothing yet', extra = '' } = {}) {
   mount.innerHTML = `
@@ -30,14 +31,16 @@ export function createEditor(mount, { record = false, empty = 'Nothing yet', ext
       ${extra ? `<span class="ml-auto flex gap-2">${extra}</span>` : ''}
     </div>`
   const el = (name) => mount.querySelector(`[data-${name}]`)
+  // sampleRate is the decoder's rate, 8 kHz by default because WaveSurfer only draws with it. Here the decoded data is also
+  // the audio that gets cropped, converted and rendered, so it decodes at the rate the microphone and the exports use.
   const ws = WaveSurfer.create({
-    container: el('wave'), height: 160, normalize: true, dragToSeek: false,
+    container: el('wave'), height: 160, normalize: true, dragToSeek: false, sampleRate: 48000,
     waveColor: '#334155', progressColor: '#38bdf8', cursorColor: '#e2e8f0', cursorWidth: 1, barWidth: 2, barGap: 1, barRadius: 2,
   })
   const regions = ws.registerPlugin(RegionsPlugin.create())
   const editor = { ws, hasAudio: false }
   const readyHandlers = []
-  let region = null, disableDrag = null
+  let region = null, disableDrag = null, edited = false
 
   // selection: at most one region, and only once there is audio to select in
   const setSelection = (r) => {
@@ -61,7 +64,8 @@ export function createEditor(mount, { record = false, empty = 'Nothing yet', ext
     el('cur').textContent = fmt(0)
     el('play').disabled = el('reverse').disabled = false
     allowDrag(true)
-    readyHandlers.forEach((fn) => fn())
+    readyHandlers.forEach((fn) => fn(edited))
+    edited = false
   })
   ws.on('timeupdate', (t) => { el('cur').textContent = fmt(t) })
   ws.on('play', () => setButton(el('play'), 'pause', 'Pause'))
@@ -75,15 +79,16 @@ export function createEditor(mount, { record = false, empty = 'Nothing yet', ext
   editor.samples = (start, end) => monoSamples(ws, start ?? region?.start, end ?? region?.end)
   editor.load = async (src) => { regions.clearRegions(); await (src instanceof Blob ? ws.loadBlob(src) : ws.load(src)) }
   editor.onReady = (fn) => readyHandlers.push(fn)
+  const edit = async (samples, sr) => { edited = true; await editor.load(wavBlob(samples, sr)) }   // a reload the page should keep
   el('crop').onclick = async () => {
     if (!region) return
     const { samples, sr } = monoSamples(ws, region.start, region.end)
-    await editor.load(wavBlob(samples, sr))
+    await edit(samples, sr)
     toast(`Cropped to ${fmt(samples.length / sr)}`)
   }
-  el('reverse').onclick = async () => {                 // the take itself, backwards: the page treats the reload like a crop
+  el('reverse').onclick = async () => {
     const { samples, sr } = monoSamples(ws)
-    await editor.load(wavBlob(samples.reverse(), sr))
+    await edit(samples.reverse(), sr)
   }
 
   if (record) {

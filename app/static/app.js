@@ -1,5 +1,5 @@
 // The page. One waveform holds a history of take, conversion and render; everything else reads or feeds it.
-import { $, icons, setButton, toast, shell, segment, decodeFile, wavBlob, download } from './lab.js'
+import { $, icons, setButton, toast, shell, segment, wavBlob, download } from './lab.js'
 import { modal, dialog } from './modal.js'
 import { createEditor } from './editor.js'
 import { EFFECTS, newStep, chainName, chainRate, connectChain, renderChain, cardHtml } from './effects.js'
@@ -12,7 +12,7 @@ shell(`<div id="type" class="seg">
 
 // ---- state
 let lib = { voices: [], clips: [], rates: {}, warm: {}, kokoro: {} }
-const history = []                                    // { samples, sr, label, clip?, rendered? }
+const history = []                                    // { label, clip?, rendered?, samples, sr }: the samples arrive when the waveform shows the entry
 const chain = []                                      // { id, type, params, on, node }
 let nextId = 1, ctx = null, source = null
 const top = () => history[history.length - 1]
@@ -67,39 +67,40 @@ const editor = createEditor($('editor'), {
 })
 const estimateSeconds = () => {                        // the server's fit, from the rates it serves
   const r = lib.rates[mode.value], t = top(), steps = +$('steps').value
-  return r && t ? r.fixed + r.per_step_second * steps * (t.samples.length / t.sr + (voice()?.seconds ?? 10)) + (lib.warm[mode.value] ? 0 : r.cold) : 0
+  return r && t?.samples ? r.fixed + r.per_step_second * steps * (t.samples.length / t.sr + (voice()?.seconds ?? 10)) + (lib.warm[mode.value] ? 0 : r.cold) : 0
 }
 const refresh = () => {
   const t = top()
-  $('btn-go').disabled = !t || t.rendered || !lib.voices.length
-  $('btn-render').disabled = !t || !chain.some((i) => i.on)
+  $('btn-go').disabled = !t?.samples || t.rendered || !lib.voices.length
+  $('btn-render').disabled = !t?.samples || !chain.some((i) => i.on)
   $('btn-undo').disabled = history.length < 2
   $('btn-game').disabled = $('btn-share').disabled = !t?.clip || history.length < 2
   $('est').textContent = t && !t.rendered && type.value === 'Voice' ? `~${(estimateSeconds() / 60).toFixed(1)} min` : ''
   wire()
 }
-let expecting = null                                  // what the next 'ready' means: a fresh take, or an entry already pushed
-editor.onReady(async () => {
-  const what = expecting
-  expecting = 'crop'                                  // decided before any await, so a second 'ready' cannot save the take twice
-  if (what === 'take') {
+let takeNext = false                                  // the next 'ready' is a fresh take (a recording or an import) to save
+editor.onReady(async (edited) => {
+  const isTake = takeNext
+  takeNext = false                                    // decided before any await, so a second 'ready' cannot save the take twice
+  if (isTake) {
     history.length = 0
-    const entry = { ...editor.samples(0, undefined), label: takeName() || 'take' }
+    const entry = { ...editor.samples(), label: takeName() || 'take' }
     history.push(entry)
     try {
       entry.clip = await api.saveOriginal(wavBlob(entry.samples, entry.sr), takeName(), type.value)
       entry.label = entry.clip.label
       toast(`Saved original ${entry.clip.label} · ${type.value}`)
     } catch (e) { fail(e) }
-  } else if (what === 'crop' && top()) {             // a crop inside the editor reloads it: keep the entry, update its audio
+  } else if (top()) {                                 // an entry shown from its file takes its samples here; a crop or reverse replaces them
     const t = top()
-    Object.assign(t, editor.samples(0, undefined))
-    if (t.clip?.kind === 'original') api.updateOriginal(t.clip.name, wavBlob(t.samples, t.sr)).catch(fail)
+    if (edited || !t.samples) Object.assign(t, editor.samples())
+    if (edited && t.clip?.kind === 'original') api.updateOriginal(t.clip.name, wavBlob(t.samples, t.sr)).catch(fail)
   }
   refresh()
 })
-const fresh = () => { expecting = 'take' }
-const show = async (entry) => { history.push(entry); expecting = 'crop'; await editor.load(entry.clip?.url ?? wavBlob(entry.samples, entry.sr)) }
+const fresh = () => { takeNext = true }
+const load = (entry) => editor.load(entry.clip?.url ?? wavBlob(entry.samples, entry.sr))
+const show = async (entry) => { history.push(entry); await load(entry) }
 $('editor').addEventListener('recording', (e) => { if (e.detail) { fresh(); history.length = 0; refresh() } })
 $('btn-import').onclick = () => $('file').click()
 $('file').onchange = async (e) => {
@@ -119,15 +120,14 @@ const pick = async (c) => {
   if (c.kind === 'augmented' && c.input) {            // its original, when it is still in the library, sits behind the undo
     const [kind, name] = c.input.split(':')
     const o = lib.clips.find((x) => x.kind === kind && x.name === name)
-    if (o) history.push({ ...(await decodeFile(o.url)), label: o.label, clip: o })
+    if (o) history.push({ label: o.label, clip: o })
   }
-  history.push({ ...(await decodeFile(c.url)), label: c.label, clip: c, rendered: !!c.effects })
-  expecting = 'crop'
-  await editor.load(c.url)
+  await show({ label: c.label, clip: c, rendered: !!c.effects })
 }
 const remove = async (c) => {
   await api.deleteClip(c)
   history.forEach((t) => { if (t.clip?.kind === c.kind && t.clip?.name === c.name) delete t.clip })
+  history.splice(0, history.length, ...history.filter((t) => t.samples || t.clip))   // an entry only its file held goes with it
   refresh()
 }
 $('btn-library').onclick = async () => modal('Library', (await loadLibrary()).clips.map((c) => ({
@@ -201,7 +201,7 @@ $('btn-go').onclick = async () => {
     })
     lib.warm[mode.value] = true
     api.library().then((l) => { lib.rates = l.rates }).catch(() => {})     // the server refits its estimate after every run
-    await show({ ...(await decodeFile(clip.url)), label: clip.label, clip })
+    await show({ label: clip.label, clip })
     toast(`Saved augmented ${clip.label} · ${type.value}`)
   } catch (e) { fail(e) }
   $('progress-row').hidden = true
@@ -221,7 +221,7 @@ $('btn-render').onclick = async () => {
 }
 
 // ---- undo and export
-$('btn-undo').onclick = async () => { history.pop(); expecting = 'crop'; await editor.load(wavBlob(top().samples, top().sr)) }
+$('btn-undo').onclick = async () => { history.pop(); await load(top()) }
 const deliver = (fmt, what) => {
   const t = top()
   if (!t?.clip) return
