@@ -87,7 +87,7 @@ editor.onReady(async (edited) => {
     const entry = { ...editor.samples(), label: takeName() || 'take' }
     history.push(entry)
     try {
-      entry.clip = await api.saveOriginal(wavBlob(entry.samples, entry.sr), takeName(), type.value)
+      entry.clip = await api.saveOriginal(wavBlob(entry.samples, entry.sr), takeName(), type.value, recorded ? editor.mic : null)
       entry.label = entry.clip.label
       toast(`Saved original ${entry.clip.label} · ${type.value}`)
     } catch (e) { fail(e) }
@@ -98,16 +98,17 @@ editor.onReady(async (edited) => {
   }
   refresh()
 })
-const fresh = () => { takeNext = true }
+let recorded = false                                  // whether the pending take came from the microphone (its settings go in the sidecar)
+const fresh = (fromMic) => { takeNext = true; recorded = fromMic }
 const load = (entry) => editor.load(entry.clip?.url ?? wavBlob(entry.samples, entry.sr))
 const show = async (entry) => { history.push(entry); await load(entry) }
-$('editor').addEventListener('recording', (e) => { if (e.detail) { fresh(); history.length = 0; refresh() } })
+$('editor').addEventListener('recording', (e) => { if (e.detail) { fresh(true); history.length = 0; refresh() } })
 $('btn-import').onclick = () => $('file').click()
 $('file').onchange = async (e) => {
   const file = e.target.files[0]
   if (!file) return
   if (!takeName()) $('name').value = file.name.replace(/\.[^.]+$/, '')
-  fresh()
+  fresh(false)
   await editor.load(file)
   e.target.value = ''
 }

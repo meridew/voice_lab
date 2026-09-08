@@ -3,16 +3,47 @@
 import WaveSurfer from 'https://cdn.jsdelivr.net/npm/wavesurfer.js@7/dist/wavesurfer.esm.js'
 import RegionsPlugin from 'https://cdn.jsdelivr.net/npm/wavesurfer.js@7/dist/plugins/regions.esm.js'
 import { fmt, icons, setButton, toast, monoSamples, wavBlob } from './lab.js'
+import { dialog } from './modal.js'
 
-// A dry, unprocessed microphone: the browser's call-oriented defaults (echo cancellation, noise suppression, automatic
-// gain) thin a voice out, and the default Opus bitrate is low; 128 kbps at 48 kHz is transparent for speech.
-const MIC = { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } }
-const ENCODE = { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 128000 }
+// The microphone's processing switches, off by default: the browser's call-oriented defaults thin a voice out. Noise
+// suppression and auto gain are the browser's own software. On Windows, Chromium opens the microphone in raw mode,
+// bypassing the system's effects (Windows Studio Effects' Voice Focus included), unless echo cancellation is requested,
+// so that switch is the one that lets the laptop's processing in. Voice isolation is accepted but acts on ChromeOS only.
+const SWITCHES = [
+  ['noiseSuppression', 'Noise suppression', 'The browser removes steady background noise'],
+  ['echoCancellation', 'Echo cancellation', 'On Windows this also hands the microphone to the system effects, Voice Focus included'],
+  ['autoGainControl', 'Auto gain', 'The browser levels the volume'],
+  ['voiceIsolation', 'Voice isolation', 'System voice isolation where the browser supports it (ChromeOS so far)'],
+]
+const micPrefs = () => { try { return JSON.parse(localStorage.getItem('mic')) || {} } catch { return {} } }
+const micConstraints = () => {
+  const p = micPrefs(), audio = { channelCount: 1, ...Object.fromEntries(SWITCHES.map(([key]) => [key, !!p[key]])) }
+  if (p.deviceId) audio.deviceId = { ideal: p.deviceId }
+  return { audio }
+}
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const inputs = async () => (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput' && d.deviceId)
+const micDialog = async () => {
+  let devices = await inputs()
+  if (devices.some((d) => !d.label)) {                 // device names need one permission grant
+    try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach((t) => t.stop()); devices = await inputs() } catch { /* stays unnamed */ }
+  }
+  const p = micPrefs(), can = navigator.mediaDevices.getSupportedConstraints()
+  dialog('Microphone', `
+    <label><span class="label">Input</span><select class="select" name="deviceId"><option value="">Default</option>
+      ${devices.map((d) => `<option value="${d.deviceId}" ${d.deviceId === p.deviceId ? 'selected' : ''}>${esc(d.label || d.deviceId.slice(0, 8))}</option>`).join('')}
+    </select></label>
+    ${SWITCHES.map(([key, name, hint]) => `<label class="switch" title="${hint}">
+      <input type="checkbox" name="${key}" ${p[key] ? 'checked' : ''} ${can[key] ? '' : 'disabled'}><span>${name}</span></label>`).join('')}`,
+  (form) => localStorage.setItem('mic', JSON.stringify({ deviceId: form.get('deviceId') || '', ...Object.fromEntries(SWITCHES.map(([key]) => [key, form.get(key) === 'on'])) })))
+}
+const ENCODE = { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 128000 }   // 128 kbps Opus at 48 kHz is transparent for speech
 
 /**
  * Renders into `mount`; `extra` is HTML for page-specific buttons at the right end of the transport row.
- * Returns { ws, load, samples, onReady, hasAudio }; onReady's callback gets `edited`, true when the reload was a crop or reverse
- * made here. With `record: true`, `mount` gets a 'recording' event (detail true/false).
+ * Returns { ws, load, samples, onReady, hasAudio, mic }; onReady's callback gets `edited`, true when the reload was a crop or
+ * reverse made here. With `record: true`, `mount` gets a 'recording' event (detail true/false) and `mic` holds the device and
+ * processing the browser reported for the last recording.
  */
 export function createEditor(mount, { record = false, empty = 'Nothing yet', extra = '' } = {}) {
   mount.innerHTML = `
@@ -24,7 +55,8 @@ export function createEditor(mount, { record = false, empty = 'Nothing yet', ext
       </div>
     </div>
     <div class="flex items-center gap-2 pt-5">
-      ${record ? '<button class="btn-icon btn-accent" title="Record" aria-label="Record" data-rec><i data-lucide="mic"></i></button>' : ''}
+      ${record ? `<button class="btn-icon btn-accent" title="Record" aria-label="Record" data-rec><i data-lucide="mic"></i></button>
+                  <button class="btn-icon" title="Microphone" aria-label="Microphone settings" data-mic><i data-lucide="sliders-horizontal"></i></button>` : ''}
       <button class="btn-icon" title="Play" aria-label="Play" disabled data-play><i data-lucide="play"></i></button>
       <button class="btn-icon" title="Crop to selection" aria-label="Crop to selection" disabled data-crop><i data-lucide="scissors"></i></button>
       <button class="btn-icon" title="Reverse" aria-label="Reverse" disabled data-reverse><i data-lucide="flip-horizontal"></i></button>
@@ -95,10 +127,14 @@ export function createEditor(mount, { record = false, empty = 'Nothing yet', ext
     // Recorded with MediaRecorder directly and loaded as the real audio: WaveSurfer's record plugin hands over its
     // low-resolution live-waveform peaks as the decoded data, which is what an earlier version saved.
     let recorder = null, chunks = [], timer = null
+    el('mic').onclick = micDialog
     el('rec').onclick = async () => {
       if (recorder) return recorder.stop()
       let stream
-      try { stream = await navigator.mediaDevices.getUserMedia(MIC) } catch (e) { return toast(`Microphone unavailable: ${e.message}`) }
+      try { stream = await navigator.mediaDevices.getUserMedia(micConstraints()) } catch (e) { return toast(`Microphone unavailable: ${e.message}`) }
+      const track = stream.getAudioTracks()[0], applied = track.getSettings()    // what the browser actually did with the switches
+      editor.mic = { device: track.label, ...Object.fromEntries(SWITCHES.map(([key]) => [key, !!applied[key]])) }
+      toast(`${track.label} · ${SWITCHES.filter(([key]) => applied[key]).map(([, name]) => name.toLowerCase()).join(', ') || 'dry'}`)
       chunks = []
       recorder = new MediaRecorder(stream, MediaRecorder.isTypeSupported(ENCODE.mimeType) ? ENCODE : { audioBitsPerSecond: ENCODE.audioBitsPerSecond })
       recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data) }

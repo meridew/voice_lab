@@ -49,8 +49,9 @@ voice and mode or the effects that made them. The page, top to bottom:
 2. **Voice** select with a play button and a plus that makes a new reference voice with Kokoro, and an
    optional **Name**.
 3. **The waveform**: record, play, crop the selection, import a file, or open the **library** (search, chip
-   filters for Type, Stage, Voice, Mode, Effects, sorting, and a bin on each row). A take saves itself as an
-   original the moment it lands; a crop updates it.
+   filters for Type, Stage, Voice, Mode, Effects, sorting, and a bin on each row). The sliders icon beside record
+   opens the microphone: input device and processing switches, remembered in the browser (see Microphone below).
+   A take saves itself as an original the moment it lands; a crop updates it.
 4. **Convert** (voices): *Timbre* is the v1 F0 model, which keeps the melody of your delivery and moves its
    level onto the reference's, the reliable male-to-female path (real 123-139 Hz voice notes landed at 207-215
    Hz against a 209 Hz reference). *Emotion* is v2, which takes the reference's accent and emotion too, follows
@@ -77,6 +78,23 @@ tape-style. The Python sound-design vocabulary researched in `docs/sound-design-
 granular, spectral freeze, paulstretch, tape wobble, envelope filter, cleanup) was implemented on pedalboard
 and numpy, then removed from the tree in the 2026-09-08 cleanup as unused by the page; it is in git history
 for when the chain needs more than Web Audio nodes can do.
+
+## Microphone
+
+Everything is off by default: the browser's call-oriented processing thins a voice out. What each switch reaches,
+read from Chromium's Windows capture code (`media/audio/win/audio_low_latency_input_win.cc`):
+
+- **Noise suppression** and **auto gain** are the browser's own WebRTC processing, applied in software.
+- **Echo cancellation** is the one that reaches the laptop. Chromium opens the Windows microphone in raw mode, which
+  bypasses every system effect, unless echo cancellation is requested, when it uses a normal stream "so that Voice
+  Clarity can kick in". Windows applies its effects as a package (echo cancellation, noise suppression and gain
+  together), and on this Snapdragon that package includes Windows Studio Effects **Voice Focus** when it is on in
+  Quick Settings > Studio effects > Microphone (or Settings > System > Sound > the microphone > Voice focus). To put
+  every capture through the system chain instead, start the browser with `--disable-features=WASAPIRawAudioCapture`.
+- **Voice isolation** is in the spec and Chromium accepts it, but it only acts on ChromeOS devices so far.
+
+When recording starts the toast names the device and the processing the browser reports as actually applied, and
+the take's sidecar keeps the same `mic` record, so takes made with different settings can be compared later.
 
 ## Measured on this laptop (Snapdragon X2 Elite Extreme, CPU only, 2026-09-07)
 

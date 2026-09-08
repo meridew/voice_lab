@@ -9,7 +9,7 @@ const form = (fields, blob) => {
 
 export const api = {
   library: () => fetch('/api/library').then(json),
-  saveOriginal: (blob, name, type) => fetch('/api/originals', { method: 'POST', body: form({ name, type }, blob) }).then(json),
+  saveOriginal: (blob, name, type, mic) => fetch('/api/originals', { method: 'POST', body: form({ name, type, mic: mic && JSON.stringify(mic) }, blob) }).then(json),
   updateOriginal: (clipName, blob) => fetch(`/api/originals/${clipName}`, { method: 'PUT', body: form({}, blob) }).then(json),
   convert: (blob, fields) => fetch('/api/convert', { method: 'POST', body: form(fields, blob) }).then(json),
   job: (id) => fetch(`/api/jobs/${id}`).then(json),

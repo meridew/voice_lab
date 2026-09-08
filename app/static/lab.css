@@ -101,6 +101,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .dialog form { display: grid; gap: 12px; padding: 4px 16px 16px; }
 .dialog form label { display: grid; gap: 4px; }
 .dialog footer { display: flex; justify-content: flex-end; padding-top: 4px; }
+.dialog .switch { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #cbd5e1; cursor: pointer; }
+.dialog .switch input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.dialog .switch input:disabled + span { color: var(--muted); }
 textarea.input { height: auto; padding: 10px 14px; line-height: 1.4; resize: vertical; font-family: inherit; }
 
 .live { animation: pulse 1.1s ease-in-out infinite; }

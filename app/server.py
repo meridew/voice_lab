@@ -3,7 +3,7 @@
     python app/server.py            (or scripts/run.sh)   ->   http://localhost:7860
 
 Routes:  GET  /api/library                      voices and clips with their metadata
-         POST /api/originals                    save a take (wav upload, name, type)         PUT /api/originals/{name}  replace after a crop
+         POST /api/originals                    save a take (wav upload, name, type, mic)    PUT /api/originals/{name}  replace after a crop
          POST /api/convert                      start a voice conversion job on the uploaded take; GET /api/jobs/{id} for progress
          POST /api/augmented                    save a render made in the browser (wav upload, name, type, effects)
          POST /api/voices                       synthesise a reference voice with Kokoro
@@ -13,6 +13,7 @@ Routes:  GET  /api/library                      voices and clips with their meta
 from __future__ import annotations
 
 import contextlib
+import json
 import math
 import multiprocessing
 import os
@@ -138,9 +139,13 @@ def api_delete(kind: str, name: str):
 
 
 @app.post("/api/originals")
-def api_original(file: Upload, name: Annotated[str, Form()] = "", type: Annotated[str, Form()] = "Voice"):
+def api_original(file: Upload, name: Annotated[str, Form()] = "", type: Annotated[str, Form()] = "Voice", mic: Annotated[str, Form()] = ""):
+    meta = {"type": type}
+    with contextlib.suppress(ValueError):
+        if mic:
+            meta["mic"] = json.loads(mic)                                          # the device and processing the take was made with
     with _uploaded(file) as path:
-        return _public(library.clip("original", library.add_original(path, name, {"type": type})))
+        return _public(library.clip("original", library.add_original(path, name, meta)))
 
 
 @app.put("/api/originals/{name}")
