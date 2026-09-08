@@ -4,6 +4,13 @@ from __future__ import annotations
 import numpy as np
 
 KOKORO_SR = 24000
+# Kokoro's English voices, American (a) and British (b); the page offers these when making a reference voice.
+KOKORO_VOICES = {
+    "female": ["af_heart", "af_bella", "af_nicole", "af_sarah", "af_sky", "af_alloy", "af_aoede", "af_jessica", "af_kore", "af_nova",
+               "af_river", "bf_emma", "bf_isabella", "bf_alice", "bf_lily"],
+    "male": ["am_adam", "am_michael", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_onyx", "am_puck", "bm_george", "bm_lewis",
+             "bm_daniel", "bm_fable"],
+}
 _pipelines: dict = {}
 
 

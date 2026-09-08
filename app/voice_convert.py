@@ -22,6 +22,7 @@ VENDOR = Path(__file__).resolve().parents[1] / "vendor" / "seed-vc"
 _lock = threading.Lock()
 _wrapper = None
 _wrapper_v2 = None
+_ar_budget = 4000                # v2 token budget for the current conversion; set from the take's length, see convert_v2
 
 
 def _prepare_torch():
@@ -88,12 +89,13 @@ def _v2_wrapper():
                 wrapper.eval()
                 wrapper.setup_ar_caches(max_batch_size=1, max_seq_len=4096, dtype=torch.float32, device=torch.device("cpu"))
                 # The autoregressive decode is small matmuls where oneDNN gains nothing, and one run under oneDNN
-                # produced a runaway silent output, so that stage keeps the native kernels.
+                # produced a runaway silent output, so that stage keeps the native kernels. It also gets the token
+                # budget (the vendored generate is patched to take one), so a runaway stops early.
                 orig_generate = wrapper.ar.generate
 
                 def generate_native(*args, **kwargs):
                     with torch.backends.mkldnn.flags(enabled=False):
-                        return orig_generate(*args, **kwargs)
+                        return orig_generate(*args, max_new_tokens=_ar_budget, **kwargs)
                 wrapper.ar.generate = generate_native
                 if ffmpeg:
                     from pydub import AudioSegment
@@ -144,18 +146,24 @@ def convert_v1(audio, sr, voice, *, semitones=0, steps=15, cfg=0.7, length=1.0, 
 def convert_v2(audio, sr, voice, *, steps=15, convert_style=True, intelligibility=0.7, similarity=0.7, length=1.0,
                top_p=0.7, temperature=0.7, repetition_penalty=1.5):
     """Emotion: v2 takes the voice's accent and emotion as well, following its pitch range loosely."""
+    global _ar_budget
     wrapper = _v2_wrapper()
     torch = _prepare_torch()
+    # The style path samples tokens until an end marker and occasionally runs away into a long silent output. The
+    # budget (content tokens run at 50 a second) stops a runaway after twice the expected length instead of the
+    # vendor's 4000, and each retry samples more conservatively, which makes the marker far more likely.
+    schedule = [(float(temperature), float(top_p)), (0.5, 0.6), (0.3, 0.5)]
     with _temp_wav(audio, sr) as src_path:
-        for attempt in range(2):
+        for attempt, (temp, p) in enumerate(schedule):
             with _lock:
+                _ar_budget = int(duration(audio, sr) * 50 * 2 * float(length)) + 50
                 # stream_output=False drops the result on the floor inside the wrapper (it never returns it), so stream
                 # and keep the (sr, audio) pair the last chunk carries; the mp3 bytes alongside it are ignored.
                 gen = wrapper.convert_voice_with_streaming(
                     source_audio_path=src_path, target_audio_path=voice_path(voice), diffusion_steps=int(steps), length_adjust=float(length),
-                    intelligebility_cfg_rate=float(intelligibility), similarity_cfg_rate=float(similarity), top_p=float(top_p),
-                    temperature=float(temperature), repetition_penalty=float(repetition_penalty), convert_style=bool(convert_style),
-                    anonymization_only=False, device=torch.device("cpu"), dtype=torch.float32, stream_output=True)
+                    intelligebility_cfg_rate=float(intelligibility), similarity_cfg_rate=float(similarity), top_p=p, temperature=temp,
+                    repetition_penalty=float(repetition_penalty), convert_style=bool(convert_style), anonymization_only=False,
+                    device=torch.device("cpu"), dtype=torch.float32, stream_output=True)
                 full = None
                 for _, full_audio in gen:
                     if full_audio is not None:
@@ -164,13 +172,18 @@ def convert_v2(audio, sr, voice, *, steps=15, convert_style=True, intelligibilit
                 raise RuntimeError("Seed-VC v2 returned no audio")
             out_sr, out = full
             out = np.asarray(out, dtype=np.float32).squeeze()
-            # The style path samples tokens until an end marker; occasionally it runs away into a long silent output.
-            runaway = duration(out, int(out_sr)) > 2.5 * duration(audio, sr) + 2.0 or float(np.max(np.abs(out))) < 1e-3
+            # Legitimate results run up to ~1.3x the take; the budget stops a runaway at 2x + 1 s, so this catches every capped one.
+            runaway = duration(out, int(out_sr)) > 2.0 * duration(audio, sr) + 0.5 or float(np.max(np.abs(out))) < 1e-3
             if not runaway:
                 return out, int(out_sr)
-            print(f"Seed-VC v2 runaway ({duration(out, int(out_sr)):.1f} s, peak {float(np.max(np.abs(out))):.3f}); retry {attempt + 1}",
-                  file=sys.stderr, flush=True)
-    raise RuntimeError("Seed-VC v2 produced a runaway output twice; try again, or lower the temperature")
+            print(f"Seed-VC v2 runaway ({duration(out, int(out_sr)):.1f} s, peak {float(np.max(np.abs(out))):.3f}) at temperature {temp}; "
+                  f"retry {attempt + 1} of {len(schedule) - 1}", file=sys.stderr, flush=True)
+    raise RuntimeError("Seed-VC v2 ran away three times, even sampling conservatively; try a longer take")
+
+
+def warm_v1() -> None:
+    """Load the v1 model ahead of the first conversion."""
+    _v1_wrapper()
 
 
 def convert(audio, sr, voice, mode="v1", steps=15, pitch=0):

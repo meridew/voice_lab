@@ -15,12 +15,14 @@ a minute once the models are warm); time scales with the step count, so use 8-10
 ```
 app/server.py            FastAPI: the page, the JSON API (library, originals, convert jobs, renders, voices, exports), the audio files
 app/jobs.py              the model work, run in one long-lived worker process so the server keeps answering
-app/static/              the page: index.html (the flow), lab.js (editor, library modal, shell), effects.js (Web Audio chain), api.js, lab.css
+app/static/              the page: index.html (markup), app.js (the flow), editor.js (waveform), modal.js (list and dialog),
+                         effects.js (Web Audio chain), lab.js (helpers), api.js, lab.css
 app/voice_convert.py     Seed-VC v1 and v2 on the CPU, warm in the worker, with the ARM64 workarounds
 app/tts.py               Kokoro reference voices
-app/library.py           on-disk library: sources/ and library/renders (wav + json sidecars), library/voices, export/
+app/library.py           on-disk library: sources/ and library/renders (wav + json sidecars), library/voices; exports are streamed
+patches/                 the two changes to the vendored Seed-VC (BigVGAN's conv1d bypasses oneDNN; v2's generate takes a token budget)
 docs/                    design notes (sound-design-surface.md: the research behind the effects)
-scripts/setup.sh         one-time WSL2 setup (uv-managed Python 3.10, torch CPU, Seed-VC clone and patches, deps); no sudo
+scripts/setup.sh         one-time WSL2 setup (uv-managed Python 3.10, torch CPU, Seed-VC at a pinned commit plus the patch, deps); no sudo
 scripts/run.sh           launch the server
 scripts/check.sh         the verification kernel: ruff and the API in-process (no models, no UI)
 scripts/convert-check.sh a real conversion against the running server, proving it keeps answering meanwhile
@@ -44,10 +46,11 @@ renders), plus reference **voices**. Every clip carries its type (Voice or SFX),
 voice and mode or the effects that made them. The page, top to bottom:
 
 1. **Voice / SFX** switch: tags everything saved from here on; SFX hides the voice parts.
-2. **Voice** select with a play button, and an optional **Name**.
+2. **Voice** select with a play button and a plus that makes a new reference voice with Kokoro, and an
+   optional **Name**.
 3. **The waveform**: record, play, crop the selection, import a file, or open the **library** (search, chip
-   filters for Type, Stage, Voice, Mode, Effects, and sorting). A take saves itself as an original the moment
-   it lands; a crop updates it.
+   filters for Type, Stage, Voice, Mode, Effects, sorting, and a bin on each row). A take saves itself as an
+   original the moment it lands; a crop updates it.
 4. **Convert** (voices): *Timbre* is the v1 F0 model, which keeps the melody of your delivery and moves its
    level onto the reference's, the reliable male-to-female path (real 123-139 Hz voice notes landed at 207-215
    Hz against a 209 Hz reference). *Emotion* is v2, which takes the reference's accent and emotion too, follows
@@ -56,11 +59,11 @@ voice and mode or the effects that made them. The page, top to bottom:
 5. **Effects**: add cards that run live while the waveform plays (pitch as tape speed, low-pass, high-pass,
    gain, distortion, delay, reverb, tremolo), each with bypass, move and remove. **Render** bakes the chain
    into the next step and saves it.
-6. **Undo** walks back through render, conversion, take. **Export** delivers what is showing as Opus 48 kbps
+6. **Undo** walks back through render, conversion, take. **Export** downloads what is showing as Opus 48 kbps
    for the game (Chromium decodes it natively, about 20 KB per line) or MP3 128 kbps for sharing, 48 kHz
-   mono, peak-normalised to −1 dBFS. WAV masters stay in the library.
+   mono, peak-normalised to −1 dBFS, encoded on demand; WAV masters stay in the library.
 
-Voices are synthesised with Kokoro through `POST /api/voices` (nobody's real voice): `bf_alice` and
+Voices are synthesised with Kokoro (nobody's real voice): `bf_alice` and
 `af_jessica` read at about 213 Hz, `af_bella` 209, `af_sarah` 204, `af_heart` 202; the breathy `af_nicole` and
 `af_sky` sit near 157 Hz. Variation at play time (a little random pitch and gain per trigger) is the game
 engine's job, as in Wwise and FMOD, so the lab does not generate variation batches.

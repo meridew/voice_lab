@@ -1,0 +1,35 @@
+diff --git a/modules/bigvgan/alias_free_activation/torch/filter.py b/modules/bigvgan/alias_free_activation/torch/filter.py
+index 0fa35b0..9cf9a7c 100644
+--- a/modules/bigvgan/alias_free_activation/torch/filter.py
++++ b/modules/bigvgan/alias_free_activation/torch/filter.py
+@@ -96,6 +96,8 @@ class LowPassFilter1d(nn.Module):
+ 
+         if self.padding:
+             x = F.pad(x, (self.pad_left, self.pad_right), mode=self.padding_mode)
+-        out = F.conv1d(x, self.filter.expand(C, -1, -1), stride=self.stride, groups=C)
++        # voice-lab: oneDNN's aarch64 JIT rejects this depthwise conv ("illegal immediate parameter"); bypass it here only.
++        with torch.backends.mkldnn.flags(enabled=False):
++            out = F.conv1d(x, self.filter.expand(C, -1, -1), stride=self.stride, groups=C)
+ 
+         return out
+diff --git a/modules/v2/ar.py b/modules/v2/ar.py
+index 0611a45..5f109ad 100644
+--- a/modules/v2/ar.py
++++ b/modules/v2/ar.py
+@@ -384,6 +384,7 @@ class NaiveWrapper(nn.Module):
+             prompt_text,
+             prompt_target,
+             compiled_decode_fn = None,
++            max_new_tokens = 4000,  # voice-lab: callers budget this from the source length so a runaway costs seconds, not minutes
+             **sampling_kwargs,
+     ):
+         sep_token_emb = self.sep_token_emb.expand(1, 1, -1)
+@@ -401,7 +402,7 @@ class NaiveWrapper(nn.Module):
+         pred_codes.append(pred_base)
+         new_emb = self.model.embed_base(pred_base.unsqueeze(0), torch.LongTensor([1]).to(pred_base.device))[1]
+         emb_seq = torch.cat([emb_seq, new_emb], dim=1)
+-        for _ in tqdm(range(4000)):
++        for _ in tqdm(range(max_new_tokens)):
+             suppress_eos = len(pred_codes) < 10
+             input_pos = input_pos[-1:] + 1
+             kv_pos = kv_pos[-1:] + 1

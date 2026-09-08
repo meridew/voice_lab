@@ -27,5 +27,7 @@ export const api = {
     poll()
   }),
   saveAugmented: (blob, fields) => fetch('/api/augmented', { method: 'POST', body: form(fields, blob) }).then(json),
+  createVoice: (fields) => fetch('/api/voices', { method: 'POST', body: form(fields) }).then(json),
+  deleteClip: (clip) => fetch(`/api/clips/${clip.kind}/${clip.name}`, { method: 'DELETE' }).then(json),
   exportUrl: (clip, fmt) => `/api/export/${clip.kind}/${clip.name}.${fmt}`,
 }

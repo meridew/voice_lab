@@ -4,8 +4,27 @@ The server keeps one worker alive across jobs (the models stay warm in it) and h
 """
 from __future__ import annotations
 
+import numpy as np
+
+import library
 import voice_convert
 from audio import duration, load, median_f0, peak_normalize, save
+
+
+def warm() -> None:
+    """Run one tiny Timbre conversion in the worker, so the session's first real one pays for none of the loading.
+
+    The F0 path loads its own vocoder on first use and the pitch analysis compiles on first call, so loading the
+    wrapper alone is not enough.
+    """
+    voices = library.list_voices()
+    if not voices:
+        voice_convert.warm_v1()
+        return
+    sr = 16000
+    tone = (0.3 * np.sin(2 * np.pi * 120 * np.arange(sr) / sr)).astype(np.float32)
+    out, out_sr = voice_convert.convert(tone, sr, voices[0], "v1", steps=2, pitch=0)
+    median_f0(out, out_sr)
 
 
 def convert(in_path: str, out_path: str, voice: str, mode: str, steps: int, pitch: int) -> dict:

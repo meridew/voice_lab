@@ -93,6 +93,15 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .row:hover { background: rgba(31, 42, 61, .6); }
 .row .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; }
 .row .meta { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.modal ul li .btn-icon { flex: none; opacity: .5; }
+.modal ul li:hover .btn-icon { opacity: 1; }
+
+/* the form dialog: sized by its fields, not the list frame */
+.modal.dialog { height: auto; }
+.dialog form { display: grid; gap: 12px; padding: 4px 16px 16px; }
+.dialog form label { display: grid; gap: 4px; }
+.dialog footer { display: flex; justify-content: flex-end; padding-top: 4px; }
+textarea.input { height: auto; padding: 10px 14px; line-height: 1.4; resize: vertical; font-family: inherit; }
 
 .live { animation: pulse 1.1s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .25 } }

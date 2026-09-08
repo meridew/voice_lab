@@ -24,27 +24,18 @@ python --version
 echo "== torch (CPU wheels for aarch64)"
 uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-echo "== seed-vc source"
+echo "== seed-vc source, pinned"
+SEEDVC_COMMIT=51383efd921027683c89e5348211d93ff12ac2a8
 mkdir -p "$PROJECT/vendor"
 if [ ! -d "$PROJECT/vendor/seed-vc/.git" ]; then
-  git clone --depth 1 https://github.com/Plachtaa/seed-vc "$PROJECT/vendor/seed-vc"
+  git clone https://github.com/Plachtaa/seed-vc "$PROJECT/vendor/seed-vc"
 fi
-# Local patch: inference_v2.py hard-codes float16, which is unreliable on the CPU.
-sed -i 's/^dtype = torch.float16$/dtype = torch.float16 if device.type != "cpu" else torch.float32  # voice-lab: fp16 is unreliable on CPU/' "$PROJECT/vendor/seed-vc/inference_v2.py"
-# Local patch: oneDNN's aarch64 JIT rejects BigVGAN's depthwise anti-aliasing conv1d ("illegal immediate parameter").
-# Bypassing oneDNN for that one op lets the rest of the models keep the fast kernels (VOICE_LAB_ONEDNN=1).
-python - "$PROJECT/vendor/seed-vc/modules/bigvgan/alias_free_activation/torch/filter.py" <<'EOF'
-import sys
-path = sys.argv[1]
-src = open(path, encoding="utf-8").read()
-old = "        out = F.conv1d(x, self.filter.expand(C, -1, -1), stride=self.stride, groups=C)\n"
-new = ("        # voice-lab: oneDNN's aarch64 JIT rejects this depthwise conv (\"illegal immediate parameter\"); bypass it here only.\n"
-       "        with torch.backends.mkldnn.flags(enabled=False):\n"
-       "            out = F.conv1d(x, self.filter.expand(C, -1, -1), stride=self.stride, groups=C)\n")
-if old in src and "voice-lab" not in src:
-    open(path, "w", encoding="utf-8").write(src.replace(old, new))
-    print("patched", path)
-EOF
+git -C "$PROJECT/vendor/seed-vc" checkout -q "$SEEDVC_COMMIT" -- .
+git -C "$PROJECT/vendor/seed-vc" checkout -q "$SEEDVC_COMMIT"
+# Local patches (see patches/seed-vc.patch): oneDNN's aarch64 JIT rejects BigVGAN's depthwise anti-aliasing conv1d
+# ("illegal immediate parameter"), so that one op bypasses oneDNN; and v2's autoregressive generate takes a token
+# budget so a runaway stops after seconds instead of 4000 tokens.
+git -C "$PROJECT/vendor/seed-vc" apply "$PROJECT/patches/seed-vc.patch"
 
 echo "== seed-vc runtime deps + app deps, resolved together so the pins hold"
 # Seed-VC pins minus CUDA nightlies, GUI and evaluation extras. soundfile 0.12.1 has no bundled libsndfile

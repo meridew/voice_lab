@@ -3,9 +3,9 @@
   sources/            originals: recordings and imports, <stamp>_<slug>.wav + .json sidecar (label, type, seconds)
   library/renders/    augmented: conversions and renders, <stamp>_<slug>.wav + .json sidecar (label, type, voice, mode, effects, input, stats)
   library/voices/     reference voices: <name>.wav + voices.json
-  export/             delivery files (Opus for the game, MP3 for sharing, WAV master)
 
-Kinds are original | augmented | voice; the page refers to a clip as "<kind>:<name>".
+Kinds are original | augmented | voice; the page refers to a clip as "<kind>:<name>". Exports are encoded on
+demand into a temp file and streamed; nothing is kept beyond the library itself.
 """
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ from audio import duration, ensure_ffmpeg, load, peak_normalize, resample, save
 
 ROOT = Path(__file__).resolve().parents[1]
 FOLDERS = {"original": ROOT / "sources", "augmented": ROOT / "library" / "renders", "voice": ROOT / "library" / "voices"}
-EXPORT = ROOT / "export"
 for folder in FOLDERS.values():
     folder.mkdir(parents=True, exist_ok=True)
 EXPORT_FORMATS = {
@@ -102,6 +101,15 @@ def clip(kind: str, name: str) -> dict | None:
     return _clip_at(kind, path) if path.exists() else None
 
 
+def delete_clip(kind: str, name: str) -> None:
+    for path in (Path(clip_path(kind, name)), FOLDERS[kind] / f"{name}.json"):
+        path.unlink(missing_ok=True)
+    if kind == "voice":
+        index = _voices_index()
+        index.pop(name, None)
+        _write_json(FOLDERS["voice"] / "voices.json", index)
+
+
 # ----------------------------------------------------------------------------- originals
 def add_original(path: str, name: str | None = None, meta: dict | None = None) -> str:
     """Store a recording or import as an original with its sidecar; returns its name."""
@@ -152,31 +160,28 @@ def add_voice(name: str, audio: np.ndarray, sr: int, meta: dict | None = None) -
 
 
 # ----------------------------------------------------------------------------- export
-def export_clip(kind: str, name: str, fmt: str = "opus", sr: int = 48000, peak_db: float = -1.0) -> str:
-    """Write a delivery file into export/: 48 kHz mono, peak-normalised, encoded per EXPORT_FORMATS. Returns the file written."""
+def export_clip(kind: str, name: str, fmt: str = "opus", sr: int = 48000, peak_db: float = -1.0) -> tuple[str, str]:
+    """Encode a clip for delivery into its own temp folder: 48 kHz mono, peak-normalised, per EXPORT_FORMATS.
+
+    Returns (path, download name); the caller removes the folder once the file has been sent.
+    """
     ext, encode = EXPORT_FORMATS[fmt]
     audio, native_sr = load(clip_path(kind, name))
     audio, _ = resample(audio, native_sr, int(sr))
     audio = peak_normalize(audio, 10 ** (float(peak_db) / 20.0))
-    EXPORT.mkdir(parents=True, exist_ok=True)
-    base = slug(meta(kind, name).get("label") or name, 80)
-    out = EXPORT / f"{base}{ext}"
-    if out.exists():                                        # two clips with one label: keep both, stamp the newcomer
-        out = EXPORT / f"{base}-{name.split('_', 1)[0]}{ext}"
+    filename = f"{slug(meta(kind, name).get('label') or name, 80)}{ext}"
+    out = Path(tempfile.mkdtemp(prefix="lab_export_")) / filename
     if encode is None:
         save(str(out), audio, int(sr))
-        return str(out)
+        return str(out), filename
     ffmpeg = ensure_ffmpeg()
     if not ffmpeg:
         raise RuntimeError("No ffmpeg available for encoding; export as wav instead.")
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        master = tmp.name
-    try:
-        save(master, audio, int(sr))
-        proc = subprocess.run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", master, "-ac", "1", *encode, str(out)],
-                              capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg failed: {proc.stderr.strip()[-400:]}")
-    finally:
-        Path(master).unlink(missing_ok=True)
-    return str(out)
+    master = out.with_suffix(".master.wav")
+    save(str(master), audio, int(sr))
+    proc = subprocess.run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(master), "-ac", "1", *encode, str(out)],
+                          capture_output=True, text=True)
+    master.unlink(missing_ok=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {proc.stderr.strip()[-400:]}")
+    return str(out), filename

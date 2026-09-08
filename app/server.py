@@ -30,28 +30,40 @@ import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 APP_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(APP_DIR))
 os.environ["PYTHONPATH"] = f"{APP_DIR}{os.pathsep}{os.environ.get('PYTHONPATH', '')}"   # the worker process imports from here too
 import jobs  # noqa: E402
 import library  # noqa: E402
+import tts  # noqa: E402
 from audio import duration, ensure_ffmpeg, load, peak_normalize  # noqa: E402
-from tts import synthesize  # noqa: E402
 
 ensure_ffmpeg()
 STATIC = APP_DIR / "static"
 # One long-lived worker process runs the models: Seed-VC's Python-heavy stages would otherwise starve the event loop.
 _pool = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
-# Measured on this laptop (oneDNN on, 15 steps): v1's F0 model ~11.5 s of compute per second of audio, v2 with its
-# accent-and-emotion stage ~15 s/s. The worker's first job of each model also imports torch and loads the checkpoints
-# (~35 s for v1 measured through the API). The page reads these too.
-RATES = {"v1": {"rate": 11.5, "cold": 35.0}, "v2": {"rate": 15.0, "cold": 45.0}}
+# Conversion time on this laptop, fitted to measured runs: a fixed extraction cost, a cost per diffusion step (the
+# model diffuses the reference voice's 10 s alongside the take, so steps cost about the same whatever the take), and a
+# small cost per step per second of take. A cold model also pays its import and checkpoint load; the server warms v1
+# at startup so a session's first conversion normally skips that. The page reads these too.
+RATES = {"v1": {"fixed": 19.0, "per_step": 1.2, "per_step_second": 0.2, "cold": 35.0},
+         "v2": {"fixed": 17.0, "per_step": 1.5, "per_step_second": 0.25, "cold": 16.0}}
 _warm = {"v1": False, "v2": False}
 _jobs: dict[str, dict] = {}
 Upload = Annotated[UploadFile, File()]
 
-app = FastAPI(title="Voice Lab")
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    if os.environ.get("VOICE_LAB_WARM", "1") != "0":
+        _pool.submit(jobs.warm).add_done_callback(lambda done: _warm.__setitem__("v1", done.exception() is None))
+    yield
+    _pool.shutdown(cancel_futures=True)
+
+
+app = FastAPI(title="Voice Lab", lifespan=lifespan)
 
 
 def _public(clip: dict) -> dict:
@@ -72,14 +84,23 @@ def _uploaded(upload: UploadFile, keep: bool = False):
 
 
 def _estimate(seconds: float, mode: str, steps: int) -> float:
-    return seconds * RATES[mode]["rate"] * int(steps) / 15.0 + (0.0 if _warm[mode] else RATES[mode]["cold"])
+    r = RATES[mode]
+    return r["fixed"] + r["per_step"] * int(steps) + r["per_step_second"] * seconds * int(steps) + (0.0 if _warm[mode] else r["cold"])
 
 
 @app.get("/api/library")
 def api_library():
     return {"voices": [_public(c) for c in library.list_clips("voice")],
             "clips": [_public(c) for kind in ("original", "augmented") for c in library.list_clips(kind)],
-            "rates": RATES, "warm": _warm}
+            "rates": RATES, "warm": _warm, "kokoro": tts.KOKORO_VOICES}
+
+
+@app.delete("/api/clips/{kind}/{name}")
+def api_delete(kind: str, name: str):
+    if kind not in library.FOLDERS or not library.clip(kind, name):
+        raise HTTPException(404, "no such clip")
+    library.delete_clip(kind, name)
+    return {"deleted": f"{kind}:{name}"}
 
 
 @app.post("/api/originals")
@@ -160,7 +181,7 @@ def api_augmented(file: Upload, name: Annotated[str, Form()] = "", type: Annotat
 @app.post("/api/voices")
 def api_voice(name: Annotated[str, Form()], text: Annotated[str, Form()], kokoro: Annotated[str, Form()] = "af_bella",
               speed: Annotated[float, Form()] = 0.9):
-    audio, sr = synthesize(text, kokoro, speed)
+    audio, sr = tts.synthesize(text, kokoro, speed)
     vname = library.add_voice(name, peak_normalize(audio), sr, {"text": text, "kokoro_voice": kokoro, "speed": speed})
     return _public(library.clip("voice", vname))
 
@@ -169,8 +190,8 @@ def api_voice(name: Annotated[str, Form()], text: Annotated[str, Form()], kokoro
 def api_export(kind: str, name: str, fmt: str):
     if fmt not in library.EXPORT_FORMATS or not library.clip(kind, name):
         raise HTTPException(404, "no such clip or format")
-    path = library.export_clip(kind, name, fmt)
-    return FileResponse(path, filename=os.path.basename(path))
+    path, filename = library.export_clip(kind, name, fmt)
+    return FileResponse(path, filename=filename, background=BackgroundTask(shutil.rmtree, os.path.dirname(path), ignore_errors=True))
 
 
 for kind, folder in library.FOLDERS.items():
