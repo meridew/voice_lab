@@ -104,6 +104,7 @@ $('btn-import').onclick = () => $('file').click()
 $('file').onchange = async (e) => {
   const file = e.target.files[0]
   if (!file) return
+  if (!takeName()) $('name').value = file.name.replace(/\.[^.]+$/, '')
   fresh()
   await editor.load(file)
   e.target.value = ''

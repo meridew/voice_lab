@@ -4,6 +4,9 @@ The server keeps one worker alive across jobs (the models stay warm in it) and h
 """
 from __future__ import annotations
 
+import sys
+import time
+
 import numpy as np
 
 import library
@@ -17,14 +20,16 @@ def warm() -> None:
     The F0 path loads its own vocoder on first use and the pitch analysis compiles on first call, so loading the
     wrapper alone is not enough.
     """
+    t0 = time.time()
     voices = library.list_voices()
     if not voices:
         voice_convert.warm_v1()
-        return
-    sr = 16000
-    tone = (0.3 * np.sin(2 * np.pi * 120 * np.arange(sr) / sr)).astype(np.float32)
-    out, out_sr = voice_convert.convert(tone, sr, voices[0], "v1", steps=2, pitch=0)
-    median_f0(out, out_sr)
+    else:
+        sr = 16000
+        tone = (0.3 * np.sin(2 * np.pi * 120 * np.arange(sr) / sr)).astype(np.float32)
+        out, out_sr = voice_convert.convert(tone, sr, voices[0], "v1", steps=2, pitch=0)
+        median_f0(out, out_sr)
+    print(f"warm-up done in {time.time() - t0:.0f} s", file=sys.stderr, flush=True)
 
 
 def convert(in_path: str, out_path: str, voice: str, mode: str, steps: int, pitch: int) -> dict:

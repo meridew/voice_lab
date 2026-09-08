@@ -48,8 +48,8 @@ _pool = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_contex
 # model diffuses the reference voice's 10 s alongside the take, so steps cost about the same whatever the take), and a
 # small cost per step per second of take. A cold model also pays its import and checkpoint load; the server warms v1
 # at startup so a session's first conversion normally skips that. The page reads these too.
-RATES = {"v1": {"fixed": 19.0, "per_step": 1.2, "per_step_second": 0.2, "cold": 35.0},
-         "v2": {"fixed": 17.0, "per_step": 1.5, "per_step_second": 0.25, "cold": 16.0}}
+RATES = {"v1": {"fixed": 3.0, "per_step": 1.15, "per_step_second": 0.1, "cold": 25.0},
+         "v2": {"fixed": 8.0, "per_step": 1.5, "per_step_second": 0.15, "cold": 16.0}}
 _warm = {"v1": False, "v2": False}
 _jobs: dict[str, dict] = {}
 Upload = Annotated[UploadFile, File()]

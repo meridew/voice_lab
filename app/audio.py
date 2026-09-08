@@ -59,10 +59,16 @@ def duration(audio: np.ndarray, sr: int) -> float:
 
 
 def median_f0(audio: np.ndarray, sr: int) -> float | None:
-    """Median voiced pitch in Hz (a crude objective check: adult male ~85-155, adult female ~165-255)."""
+    """Median pitch of the louder frames in Hz (a crude check: adult male ~85-155, adult female ~165-255).
+
+    yin at 16 kHz on frames above a fifth of the peak level; pyin's voicing model was several seconds per clip.
+    """
     try:
-        f0, voiced, _ = librosa.pyin(audio, fmin=60, fmax=500, sr=sr, frame_length=2048)
-        f0 = f0[voiced & np.isfinite(f0)]
-        return float(np.median(f0)) if f0.size else None
+        x = librosa.resample(np.asarray(audio, dtype=np.float32), orig_sr=sr, target_sr=16000) if sr != 16000 else np.asarray(audio, dtype=np.float32)
+        frame, hop = 1024, 256
+        f0 = librosa.yin(x, fmin=60, fmax=500, sr=16000, frame_length=frame, hop_length=hop)
+        rms = librosa.feature.rms(y=x, frame_length=frame, hop_length=hop)[0][: len(f0)]
+        loud = rms > 0.2 * (rms.max() or 1.0)
+        return float(np.median(f0[: len(loud)][loud])) if loud.any() else None
     except Exception:
         return None

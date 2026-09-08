@@ -12,7 +12,7 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 uv --version
 
-echo "== python 3.10 venv at $VENV"
+echo "== python 3.10 venv at $VENV (also on the Linux filesystem)"
 uv python install 3.10
 if [ ! -x "$VENV/bin/python" ]; then
   uv venv "$VENV" --python 3.10
@@ -24,18 +24,19 @@ python --version
 echo "== torch (CPU wheels for aarch64)"
 uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-echo "== seed-vc source, pinned"
+echo "== seed-vc source, pinned, on the Linux filesystem (its 1.2 GB of checkpoints load far faster there than through /mnt/c)"
 SEEDVC_COMMIT=51383efd921027683c89e5348211d93ff12ac2a8
-mkdir -p "$PROJECT/vendor"
-if [ ! -d "$PROJECT/vendor/seed-vc/.git" ]; then
-  git clone https://github.com/Plachtaa/seed-vc "$PROJECT/vendor/seed-vc"
+VENDOR="${VOICE_LAB_VENDOR:-$HOME/.cache/voice-lab/seed-vc}"
+mkdir -p "$(dirname "$VENDOR")"
+if [ ! -d "$VENDOR/.git" ]; then
+  git clone https://github.com/Plachtaa/seed-vc "$VENDOR"
 fi
-git -C "$PROJECT/vendor/seed-vc" checkout -q "$SEEDVC_COMMIT" -- .
-git -C "$PROJECT/vendor/seed-vc" checkout -q "$SEEDVC_COMMIT"
-# Local patches (see patches/seed-vc.patch): oneDNN's aarch64 JIT rejects BigVGAN's depthwise anti-aliasing conv1d
-# ("illegal immediate parameter"), so that one op bypasses oneDNN; and v2's autoregressive generate takes a token
-# budget so a runaway stops after seconds instead of 4000 tokens.
-git -C "$PROJECT/vendor/seed-vc" apply "$PROJECT/patches/seed-vc.patch"
+git -C "$VENDOR" checkout -q "$SEEDVC_COMMIT" -- .
+git -C "$VENDOR" checkout -q "$SEEDVC_COMMIT"
+# Local patches (see patches/seed-vc.patch): BigVGAN's depthwise anti-aliasing conv1d, which crashes oneDNN's aarch64
+# JIT and is ~10 s per conversion on the native kernel, becomes an unfold + matmul; and v2's autoregressive generate
+# takes a token budget so a runaway stops after seconds instead of 4000 tokens.
+git -C "$VENDOR" apply "$PROJECT/patches/seed-vc.patch"
 
 echo "== seed-vc runtime deps + app deps, resolved together so the pins hold"
 # Seed-VC pins minus CUDA nightlies, GUI and evaluation extras. soundfile 0.12.1 has no bundled libsndfile

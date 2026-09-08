@@ -20,13 +20,13 @@ app/static/              the page: index.html (markup), app.js (the flow), edito
 app/voice_convert.py     Seed-VC v1 and v2 on the CPU, warm in the worker, with the ARM64 workarounds
 app/tts.py               Kokoro reference voices
 app/library.py           on-disk library: sources/ and library/renders (wav + json sidecars), library/voices; exports are streamed
-patches/                 the two changes to the vendored Seed-VC (BigVGAN's conv1d bypasses oneDNN; v2's generate takes a token budget)
+patches/                 the two changes to the vendored Seed-VC (BigVGAN's anti-aliasing filter as a matmul; v2's generate takes a token budget)
 docs/                    design notes (sound-design-surface.md: the research behind the effects)
 scripts/setup.sh         one-time WSL2 setup (uv-managed Python 3.10, torch CPU, Seed-VC at a pinned commit plus the patch, deps); no sudo
 scripts/run.sh           launch the server
 scripts/check.sh         the verification kernel: ruff and the API in-process (no models, no UI)
 scripts/convert-check.sh a real conversion against the running server, proving it keeps answering meanwhile
-vendor/seed-vc           Seed-VC source (cloned by setup, git-ignored)
+~/.cache/voice-lab/seed-vc   Seed-VC source and checkpoints, on the Linux filesystem (cloned and patched by setup; VOICE_LAB_VENDOR overrides)
 ```
 
 ## Setup and run
@@ -90,14 +90,16 @@ reference (198 Hz) at 15 diffusion steps, models warm unless noted:
 | v2, accent and emotion, warm | 81 s | 73 s | 22.05 kHz, ~190 Hz |
 | v1 F0 model, auto-match, 0 st (fresh process, oneDNN off) | 86 s | | 44.1 kHz, 201 Hz |
 
-So about 5x real time for v1 at 15 steps (the F0 model the app uses runs at 44.1 kHz and costs about twice
-that). oneDNN was originally disabled for the whole process because its aarch64 JIT crashes; the crash turned
-out to be one depthwise conv1d in BigVGAN's anti-aliasing filter, which setup.sh now patches to bypass oneDNN
-on its own. v2's autoregressive stage stays on the native kernels (one run under oneDNN produced a runaway
-silent output) and the app retries once if a v2 result runs away. Set `VOICE_LAB_ONEDNN=0` to revert to the
-all-native path. Cheaper knobs in order: fewer diffusion steps, shorter takes, then (untried) bfloat16 autocast
-on the Oryon cores or the Seed-VC "tiny" real-time checkpoint. The one-off scripts behind these numbers live
-in git history (before the cleanup of 2026-09-08).
+Those were the numbers before the performance pass. A profile of a warm F0-model conversion then showed most of
+its fixed cost inside BigVGAN's anti-aliasing filter: a depthwise conv1d that crashes oneDNN's aarch64 JIT and,
+bypassed onto the native kernel, cost about 10 s per conversion. `patches/seed-vc.patch` rewrites it as unfold
+plus matmul (same taps on every channel, identical output, no convolution kernel), which took a warm conversion
+of a 1.3 s take at 8 steps from 29 s to 12 s and a cold one from 39 s to 26 s. What remains is the diffusion
+itself, about 1.15 s per step, driven by the reference voice's length (capped at 12 s) more than the take's.
+v2's autoregressive stage stays on the native kernels (one run under oneDNN produced a runaway silent output),
+its generation is budgeted from the take's length, and retries sample more conservatively. Set
+`VOICE_LAB_ONEDNN=0` to revert to all-native kernels. Cheaper knobs in order: fewer diffusion steps, a shorter
+reference voice, then (untried) bfloat16 autocast on the Oryon cores or the Seed-VC "tiny" real-time checkpoint.
 
 ## ARM64 notes (what setup.sh works around)
 

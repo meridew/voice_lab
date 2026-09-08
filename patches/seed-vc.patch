@@ -1,17 +1,23 @@
 diff --git a/modules/bigvgan/alias_free_activation/torch/filter.py b/modules/bigvgan/alias_free_activation/torch/filter.py
-index 0fa35b0..9cf9a7c 100644
+index 0fa35b0..b836660 100644
 --- a/modules/bigvgan/alias_free_activation/torch/filter.py
 +++ b/modules/bigvgan/alias_free_activation/torch/filter.py
-@@ -96,6 +96,8 @@ class LowPassFilter1d(nn.Module):
+@@ -92,10 +92,10 @@ class LowPassFilter1d(nn.Module):
  
+     # Input [B, C, T]
+     def forward(self, x):
+-        _, C, _ = x.shape
+-
          if self.padding:
              x = F.pad(x, (self.pad_left, self.pad_right), mode=self.padding_mode)
 -        out = F.conv1d(x, self.filter.expand(C, -1, -1), stride=self.stride, groups=C)
-+        # voice-lab: oneDNN's aarch64 JIT rejects this depthwise conv ("illegal immediate parameter"); bypass it here only.
-+        with torch.backends.mkldnn.flags(enabled=False):
-+            out = F.conv1d(x, self.filter.expand(C, -1, -1), stride=self.stride, groups=C)
- 
-         return out
+-
+-        return out
++        # voice-lab: the same taps on every channel as a depthwise conv1d hit oneDNN's aarch64 JIT crash, and with oneDNN
++        # bypassed the native depthwise kernel cost ~10 s per conversion. As sliding windows times the taps it is a plain
++        # matmul: identical output, no convolution kernel involved.
++        windows = x.unfold(-1, self.kernel_size, self.stride)
++        return windows.matmul(self.filter.reshape(-1))
 diff --git a/modules/v2/ar.py b/modules/v2/ar.py
 index 0611a45..5f109ad 100644
 --- a/modules/v2/ar.py

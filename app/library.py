@@ -91,9 +91,20 @@ def _clip_at(kind: str, path: Path) -> dict:
     return clip
 
 
+_version = 0                     # bumped by every write below; listings are cached against it (sidecar reads over /mnt/c are slow)
+_listings: dict = {}
+
+
+def _changed() -> None:
+    global _version
+    _version += 1
+
+
 def list_clips(kind: str) -> list[dict]:
     """Voices by name; everything else newest first."""
-    return [_clip_at(kind, p) for p in sorted(FOLDERS[kind].glob("*.wav"), reverse=kind != "voice")]
+    if _listings.get(kind, (None,))[0] != _version:
+        _listings[kind] = (_version, [_clip_at(kind, p) for p in sorted(FOLDERS[kind].glob("*.wav"), reverse=kind != "voice")])
+    return [dict(c) for c in _listings[kind][1]]
 
 
 def clip(kind: str, name: str) -> dict | None:
@@ -108,16 +119,18 @@ def delete_clip(kind: str, name: str) -> None:
         index = _voices_index()
         index.pop(name, None)
         _write_json(FOLDERS["voice"] / "voices.json", index)
+    _changed()
 
 
 # ----------------------------------------------------------------------------- originals
 def add_original(path: str, name: str | None = None, meta: dict | None = None) -> str:
     """Store a recording or import as an original with its sidecar; returns its name."""
     audio, sr = load(path)
-    label = (name or "").strip() or Path(path).stem
+    label = (name or "").strip() or f"take {time.strftime('%H:%M')}"
     out = FOLDERS["original"] / f"{stamp()}_{slug(label)}.wav"
     save(str(out), audio, sr)
     _write_json(out.with_suffix(".json"), {"name": out.stem, "label": label, "type": "Voice", **(meta or {}), "seconds": round(duration(audio, sr), 2)})
+    _changed()
     return out.stem
 
 
@@ -127,6 +140,7 @@ def update_original(name: str, path: str) -> None:
     save(clip_path("original", name), audio, sr)
     side = FOLDERS["original"] / f"{name}.json"
     _write_json(side, {**_read_json(side), "name": name, "seconds": round(duration(audio, sr), 2)})
+    _changed()
 
 
 # ----------------------------------------------------------------------------- augmented
@@ -134,6 +148,7 @@ def save_augmented(audio: np.ndarray, sr: int, meta: dict, label: str) -> str:
     name = f"{stamp()}_{slug(label)}"
     save(clip_path("augmented", name), audio, sr)
     _write_json(FOLDERS["augmented"] / f"{name}.json", {"name": name, "seconds": round(duration(audio, sr), 2), "sr": sr, **meta})
+    _changed()
     return name
 
 
@@ -150,12 +165,17 @@ def voice_path(name: str) -> str:
     return clip_path("voice", name)
 
 
+MAX_VOICE_SECONDS = 12           # the model diffuses the reference alongside every take, so its length is paid on every step
+
+
 def add_voice(name: str, audio: np.ndarray, sr: int, meta: dict | None = None) -> str:
     name = slug(name)
+    audio = np.asarray(audio)[: int(MAX_VOICE_SECONDS * sr)]
     save(voice_path(name), audio, sr)
     index = _voices_index()
     index[name] = {"created": stamp(), "seconds": round(duration(audio, sr), 2), **(meta or {})}
     _write_json(FOLDERS["voice"] / "voices.json", index)
+    _changed()
     return name
 
 

@@ -7,6 +7,7 @@ accent and emotion. The models come from Hugging Face on first use.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import sys
 import tempfile
@@ -18,11 +19,32 @@ import numpy as np
 from audio import duration, ensure_ffmpeg, save
 from library import voice_path
 
-VENDOR = Path(__file__).resolve().parents[1] / "vendor" / "seed-vc"
+# The checkout lives on the Linux filesystem: loading 1.2 GB of checkpoints through the Windows mount took longer than a conversion.
+VENDOR = Path(os.environ.get("VOICE_LAB_VENDOR", Path.home() / ".cache" / "voice-lab" / "seed-vc"))
 _lock = threading.Lock()
 _wrapper = None
 _wrapper_v2 = None
 _ar_budget = 4000                # v2 token budget for the current conversion; set from the take's length, see convert_v2
+
+
+def _audio_key(x) -> bytes:
+    arr = x.detach().cpu().numpy() if hasattr(x, "detach") else np.asarray(x)
+    return hashlib.blake2b(arr.tobytes(), digest_size=16).digest()
+
+
+def _memoized(fn, size=8):
+    """Cache a feature extractor on the audio it is given: the reference voice is the same every conversion."""
+    cache: dict = {}
+
+    def wrapped(x, *args, **kwargs):
+        key = (_audio_key(x), args, tuple(sorted(kwargs.items())))
+        if key not in cache:
+            if len(cache) >= size:
+                cache.pop(next(iter(cache)))
+            cache[key] = fn(x, *args, **kwargs)
+        out = cache[key]
+        return out.clone() if hasattr(out, "clone") else np.array(out, copy=True)
+    return wrapped
 
 
 def _prepare_torch():
@@ -31,8 +53,8 @@ def _prepare_torch():
         sys.path.insert(0, str(VENDOR))
     import torch
     # oneDNN's aarch64 JIT (Xbyak) fails with "illegal immediate parameter" in BigVGAN's anti-aliasing depthwise conv1d
-    # (reproduced in v1 and v2). setup.sh patches that one filter to bypass oneDNN, and with the fast kernels on
-    # everywhere else v1 runs 1.6x faster (36 s vs 58 s for a 6.8 s take at 15 steps). VOICE_LAB_ONEDNN=0 reverts.
+    # (reproduced in v1 and v2). patches/seed-vc.patch rewrites that filter as a matmul, so oneDNN can stay on for
+    # everything else (v1 1.6x faster than all-native). VOICE_LAB_ONEDNN=0 reverts to native kernels.
     torch.backends.mkldnn.enabled = os.environ.get("VOICE_LAB_ONEDNN", "1") != "0"
     # The wrappers hard-code float16 autocast; on the CPU that is slow or unsupported, so autocast becomes a no-op
     # there and everything runs in float32.
@@ -67,7 +89,11 @@ def _v1_wrapper():
             torch = _prepare_torch()
             with _in_vendor():
                 from seed_vc_wrapper import SeedVCWrapper
-                _wrapper = SeedVCWrapper(device=torch.device("cpu"))
+                wrapper = SeedVCWrapper(device=torch.device("cpu"))
+            wrapper.whisper_model.float()                    # loaded as float16, which the CPU has no fast kernels for
+            wrapper._process_whisper_features = _memoized(wrapper._process_whisper_features)
+            wrapper.rmvpe.infer_from_audio = _memoized(wrapper.rmvpe.infer_from_audio)
+            _wrapper = wrapper
         return _wrapper
 
 
