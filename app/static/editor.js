@@ -1,9 +1,13 @@
 // The waveform editor used wherever audio is shown: waveform, time readouts, drag-to-select once audio exists,
 // play (the selection when there is one), crop, and optionally the microphone.
 import WaveSurfer from 'https://cdn.jsdelivr.net/npm/wavesurfer.js@7/dist/wavesurfer.esm.js'
-import RecordPlugin from 'https://cdn.jsdelivr.net/npm/wavesurfer.js@7/dist/plugins/record.esm.js'
 import RegionsPlugin from 'https://cdn.jsdelivr.net/npm/wavesurfer.js@7/dist/plugins/regions.esm.js'
 import { fmt, icons, setButton, toast, monoSamples, wavBlob } from './lab.js'
+
+// A dry, unprocessed microphone: the browser's call-oriented defaults (echo cancellation, noise suppression, automatic
+// gain) thin a voice out, and the default Opus bitrate is low; 128 kbps at 48 kHz is transparent for speech.
+const MIC = { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } }
+const ENCODE = { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 128000 }
 
 /**
  * Renders into `mount`; `extra` is HTML for page-specific buttons at the right end of the transport row.
@@ -78,22 +82,35 @@ export function createEditor(mount, { record = false, empty = 'Nothing yet', ext
   }
 
   if (record) {
-    const rec = ws.registerPlugin(RecordPlugin.create({ renderRecordedAudio: true, continuousWaveform: true }))
-    let recording = false
-    rec.on('record-start', () => {
-      recording = true
+    // Recorded with MediaRecorder directly and loaded as the real audio: WaveSurfer's record plugin hands over its
+    // low-resolution live-waveform peaks as the decoded data, which is what an earlier version saved.
+    let recorder = null, chunks = [], timer = null
+    el('rec').onclick = async () => {
+      if (recorder) return recorder.stop()
+      let stream
+      try { stream = await navigator.mediaDevices.getUserMedia(MIC) } catch (e) { return toast(`Microphone unavailable: ${e.message}`) }
+      chunks = []
+      recorder = new MediaRecorder(stream, MediaRecorder.isTypeSupported(ENCODE.mimeType) ? ENCODE : { audioBitsPerSecond: ENCODE.audioBitsPerSecond })
+      recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data) }
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop())
+        clearInterval(timer)
+        const blob = new Blob(chunks, { type: recorder.mimeType })
+        recorder = null
+        setButton(el('rec'), 'mic', 'Record')
+        el('empty').textContent = empty
+        mount.dispatchEvent(new CustomEvent('recording', { detail: false }))
+        await editor.load(blob)
+      }
       regions.clearRegions(); allowDrag(false)
-      el('empty').hidden = true
       el('play').disabled = true
+      el('empty').textContent = 'Recording'; el('empty').hidden = false
       el('rec').innerHTML = '<span class="live inline-block h-3 w-3 rounded-sm bg-red-400"></span>'
       el('rec').title = 'Stop'
+      const t0 = performance.now()
+      timer = setInterval(() => { el('cur').textContent = fmt((performance.now() - t0) / 1000) }, 100)
+      recorder.start()
       mount.dispatchEvent(new CustomEvent('recording', { detail: true }))
-    })
-    rec.on('record-progress', (ms) => { el('cur').textContent = fmt(ms / 1000) })
-    rec.on('record-end', () => { recording = false; setButton(el('rec'), 'mic', 'Record'); mount.dispatchEvent(new CustomEvent('recording', { detail: false })) })
-    el('rec').onclick = async () => {
-      if (recording) return rec.stopRecording()
-      try { await rec.startRecording() } catch (e) { toast(`Microphone unavailable: ${e.message}`) }
     }
   }
   icons()

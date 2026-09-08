@@ -42,6 +42,7 @@ $('play-voice').onclick = () => {
   if (!voice()) return
   audition.src = voice().url; audition.play(); setButton($('play-voice'), 'pause', 'Pause')
 }
+$('voice').onchange = () => refresh()                  // the estimate depends on the reference's length
 $('btn-voice-new').onclick = () => dialog('New voice', `
     <label><span class="label">Name</span><input class="input" name="name" required autocomplete="off"></label>
     <label><span class="label">Kokoro voice</span><select class="select" name="kokoro">
@@ -64,9 +65,9 @@ const editor = createEditor($('editor'), {
           <button id="btn-library" class="btn-icon" title="Library" aria-label="Library"><i data-lucide="folder-open"></i></button>
           <input id="file" type="file" accept="audio/*" class="hidden">`,
 })
-const estimateSeconds = () => {                        // the same fit as the server's, from the rates it serves
+const estimateSeconds = () => {                        // the server's fit, from the rates it serves
   const r = lib.rates[mode.value], t = top(), steps = +$('steps').value
-  return r && t ? r.fixed + r.per_step * steps + r.per_step_second * (t.samples.length / t.sr) * steps + (lib.warm[mode.value] ? 0 : r.cold) : 0
+  return r && t ? r.fixed + r.per_step_second * steps * (t.samples.length / t.sr + (voice()?.seconds ?? 10)) + (lib.warm[mode.value] ? 0 : r.cold) : 0
 }
 const refresh = () => {
   const t = top()
@@ -196,9 +197,10 @@ $('btn-go').onclick = async () => {
                                                                  pitch: $('pitch').value, name: takeName(), type: type.value, source: clipRef(t) })
     const clip = await api.waitForJob(id, (job) => {
       $('fill').style.width = `${job.progress * 100}%`
-      $('progress-text').textContent = job.status === 'running' ? `${job.eta.toFixed(0)} s` : ''
+      $('progress-text').textContent = job.status !== 'running' ? '' : job.eta > 0 ? `${job.eta.toFixed(0)} s` : '…'
     })
     lib.warm[mode.value] = true
+    api.library().then((l) => { lib.rates = l.rates }).catch(() => {})     // the server refits its estimate after every run
     await show({ ...(await decodeFile(clip.url)), label: clip.label, clip })
     toast(`Saved augmented ${clip.label} · ${type.value}`)
   } catch (e) { fail(e) }

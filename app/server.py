@@ -13,6 +13,7 @@ Routes:  GET  /api/library                      voices and clips with their meta
 from __future__ import annotations
 
 import contextlib
+import math
 import multiprocessing
 import os
 import shutil
@@ -26,6 +27,7 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Annotated
 
+import numpy as np
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -44,23 +46,46 @@ ensure_ffmpeg()
 STATIC = APP_DIR / "static"
 # One long-lived worker process runs the models: Seed-VC's Python-heavy stages would otherwise starve the event loop.
 _pool = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
-# Conversion time on this laptop, fitted to measured runs: a fixed extraction cost, a cost per diffusion step (the
-# model diffuses the reference voice's 10 s alongside the take, so steps cost about the same whatever the take), and a
-# small cost per step per second of take. A cold model also pays its import and checkpoint load; the server warms v1
-# at startup so a session's first conversion normally skips that. The page reads these too.
-RATES = {"v1": {"fixed": 3.0, "per_step": 1.15, "per_step_second": 0.1, "cold": 25.0},
-         "v2": {"fixed": 8.0, "per_step": 1.5, "per_step_second": 0.15, "cold": 16.0}}
+# Conversion time = fixed + per_step_second x steps x (take seconds + reference voice seconds), because every diffusion
+# step covers the reference alongside the take, plus a cold-load allowance the startup warm-up normally hides. These
+# priors were fitted on this laptop; every finished conversion is added to the fit, so the estimate keeps improving.
+PRIORS = {"v1": {"fixed": 3.0, "per_step_second": 0.1, "cold": 25.0}, "v2": {"fixed": 8.0, "per_step_second": 0.15, "cold": 16.0}}
+RATES = {mode: dict(r) for mode, r in PRIORS.items()}
+_samples: dict[str, list[tuple[float, float]]] = {"v1": [], "v2": []}       # (steps x seconds, measured compute seconds), warm runs only
 _warm = {"v1": False, "v2": False}
 _jobs: dict[str, dict] = {}
 Upload = Annotated[UploadFile, File()]
 
 
+def _refit(mode: str) -> None:
+    """Least squares over the recorded runs, anchored to the prior as if it were three runs, never below zero."""
+    prior = PRIORS[mode]
+    xs = [0.0, 200.0] * 3 + [x for x, _ in _samples[mode]]
+    ys = [prior["fixed"], prior["fixed"] + prior["per_step_second"] * 200.0] * 3 + [y for _, y in _samples[mode]]
+    (fixed, per), *_ = np.linalg.lstsq(np.column_stack([np.ones(len(xs)), xs]), np.array(ys), rcond=None)
+    RATES[mode].update(fixed=round(max(0.0, float(fixed)), 2), per_step_second=round(max(0.0, float(per)), 4))
+
+
+def _remember(mode: str, stats: dict) -> None:
+    if not stats.get("cold"):
+        _samples[mode].append((stats["steps"] * (stats["take_s"] + stats["voice_s"]), stats["compute_s"]))
+        _refit(mode)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
+    for clip in library.list_clips("augmented"):                              # the fit starts from every past run on disk
+        meta = library.meta("augmented", clip["name"])
+        if clip.get("mode") in MODES and {"compute_s", "take_s", "voice_s", "steps"} <= set(meta.get("stats", {})):
+            _remember(MODES[clip["mode"]], meta["stats"])
     if os.environ.get("VOICE_LAB_WARM", "1") != "0":
         _pool.submit(jobs.warm).add_done_callback(lambda done: _warm.__setitem__("v1", done.exception() is None))
     yield
     _pool.shutdown(cancel_futures=True)
+
+
+MODES = {"Timbre": "v1", "Emotion": "v2"}
+MODE_NAME = {v: k for k, v in MODES.items()}
 
 
 app = FastAPI(title="Voice Lab", lifespan=lifespan)
@@ -83,9 +108,9 @@ def _uploaded(upload: UploadFile, keep: bool = False):
             Path(path).unlink(missing_ok=True)
 
 
-def _estimate(seconds: float, mode: str, steps: int) -> float:
+def _estimate(take_s: float, voice_s: float, mode: str, steps: int) -> float:
     r = RATES[mode]
-    return r["fixed"] + r["per_step"] * int(steps) + r["per_step_second"] * seconds * int(steps) + (0.0 if _warm[mode] else r["cold"])
+    return r["fixed"] + r["per_step_second"] * int(steps) * (take_s + voice_s) + (0.0 if _warm[mode] else r["cold"])
 
 
 @app.get("/api/library")
@@ -122,13 +147,15 @@ def api_original_update(name: str, file: Upload):
 def api_convert(file: Upload, voice: Annotated[str, Form()], mode: Annotated[str, Form()] = "v1", steps: Annotated[int, Form()] = 15,
                 pitch: Annotated[int, Form()] = 0, name: Annotated[str, Form()] = "", type: Annotated[str, Form()] = "Voice",
                 source: Annotated[str, Form()] = ""):
-    if voice not in library.list_voices() or mode not in RATES:
+    reference = library.clip("voice", voice)
+    if not reference or mode not in RATES:
         raise HTTPException(400, "no such voice or mode")
     with _uploaded(file, keep=True) as in_path:
         audio, sr = load(in_path)
     for stale in [k for k, j in _jobs.items() if j["status"] != "running" and time.time() - j["started"] > 3600]:
         _jobs.pop(stale)
-    estimate = _estimate(duration(audio, sr), mode, steps)
+    take_s, voice_s, cold = duration(audio, sr), reference["seconds"], not _warm[mode]
+    estimate = _estimate(take_s, voice_s, mode, steps)
     job = {"id": uuid.uuid4().hex[:8], "status": "running", "started": time.time(), "estimate": estimate, "clip": None, "error": None}
     _jobs[job["id"]] = job
     label = (name or "").strip()
@@ -137,13 +164,14 @@ def api_convert(file: Upload, voice: Annotated[str, Form()], mode: Annotated[str
 
     def work():
         try:
-            stats = _pool.submit(jobs.convert, in_path, out_path, voice, mode, int(steps), int(pitch)).result()   # blocks this thread only
+            result = _pool.submit(jobs.convert, in_path, out_path, voice, mode, int(steps), int(pitch)).result()   # blocks this thread only
             _warm[mode] = True
             out, out_sr = load(out_path)
-            clip_name = library.save_augmented(out, out_sr, {
-                "label": label, "type": type, "voice": voice, "mode": "Timbre" if mode == "v1" else "Emotion", "steps": int(steps),
-                "pitch": int(pitch), "input": source,
-                "stats": {"compute_s": round(time.time() - job["started"]), "f0_in": stats["f0_in"], "f0_out": stats["f0_out"]}}, label=label)
+            stats = {"compute_s": round(time.time() - job["started"], 1), "take_s": round(take_s, 2), "voice_s": round(voice_s, 2),
+                     "steps": int(steps), "cold": cold, "f0_in": result["f0_in"], "f0_out": result["f0_out"]}
+            clip_name = library.save_augmented(out, out_sr, {"label": label, "type": type, "voice": voice, "mode": MODE_NAME[mode],
+                                                             "steps": int(steps), "pitch": int(pitch), "input": source, "stats": stats}, label=label)
+            _remember(mode, stats)
             job["clip"] = _public(library.clip("augmented", clip_name))
             job["status"] = "done"
         except Exception as e:  # reported to the page
@@ -164,8 +192,10 @@ def api_job(job_id: str):
     if not job:
         raise HTTPException(404, "no such job")
     elapsed = time.time() - job["started"]
-    return {"status": job["status"], "progress": 1.0 if job["status"] == "done" else min(0.97, elapsed / max(job["estimate"], 1.0)),
-            "eta": max(0.0, job["estimate"] - elapsed), "clip": job["clip"], "error": job["error"]}
+    ratio = elapsed / max(job["estimate"], 1.0)
+    # Linear to 90% at the estimate; past it the bar keeps creeping toward the end rather than stopping dead.
+    progress = 1.0 if job["status"] == "done" else (0.9 * ratio if ratio < 1 else 0.9 + 0.1 * (1 - math.exp(-2 * (ratio - 1))))
+    return {"status": job["status"], "progress": progress, "eta": max(0.0, job["estimate"] - elapsed), "clip": job["clip"], "error": job["error"]}
 
 
 @app.post("/api/augmented")
