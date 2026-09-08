@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The verification kernel, no models and no UI: lint, then the API in-process (library, page, an audio file, an export).
+# The verification kernel, no models and no UI: lint, then the API in-process (library, both pages, an audio file, an export, a rename).
 #   wsl -d Ubuntu-24.04 -- bash /mnt/c/Users/danie/vscode-workspace/voice-lab/scripts/check.sh
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -22,4 +22,8 @@ audio = client.get(first["url"])
 print("audio:", audio.status_code, audio.headers.get("content-type"), len(audio.content), "bytes")
 exp = client.get(f"/api/export/{first['kind']}/{first['name']}.opus")
 print("export:", exp.status_code, exp.headers.get("content-disposition"), len(exp.content), "bytes")
+lp = client.get("/library.html")
+print("library page:", lp.status_code, "ok" if b"library.js" in lp.content else "unexpected")
+upd = client.patch(f"/api/clips/{first['kind']}/{first['name']}", data={"label": first["label"], "type": first["type"]})
+print("update:", upd.status_code, upd.json().get("label"), upd.json().get("type"))
 EOF

@@ -3,8 +3,8 @@
 Local audio lab for Supreme Perilous voices and sound design: one page, one waveform. Tag the take Voice
 or SFX, record or import it, crop it, convert it to a synthetic character voice, add effects that run live
 while it plays, render, and export Opus for the game or MP3 for sharing. Originals and augmented clips save
-themselves into a library you can filter by type, stage, voice, mode and effects. Nothing leaves the laptop
-after the one-time model download.
+themselves into a library you can filter by type, stage, voice, mode and effects; a second page browses that
+library to play, rename, re-tag, export or delete. Nothing leaves the laptop after the one-time model download.
 
 Runs on the CPU inside WSL2 (Ubuntu 24.04, ARM64). The Snapdragon has no CUDA, so this is offline
 conversion, not real-time: measured about 9x real time at 15 diffusion steps (a 7 s take converts in
@@ -15,8 +15,9 @@ a minute once the models are warm); time scales with the step count, so use 8-10
 ```
 app/server.py            FastAPI: the page, the JSON API (library, originals, convert jobs, renders, voices, exports), the audio files
 app/jobs.py              the model work, run in one long-lived worker process so the server keeps answering
-app/static/              the page: index.html (markup), app.js (the flow), editor.js (waveform), modal.js (list and dialog),
-                         effects.js (Web Audio chain), lab.js (helpers), api.js, lab.css
+app/static/              the lab page: index.html (markup), app.js (the flow), editor.js (waveform), effects.js (Web Audio chain);
+                         the library page: library.html, library.js; shared: list.js (filterable list), modal.js (list modal and
+                         dialog), lab.js (shell, helpers), api.js, lab.css
 app/voice_convert.py     Seed-VC v1 and v2 on the CPU, warm in the worker, with the ARM64 workarounds
 app/tts.py               Kokoro reference voices
 app/library.py           on-disk library: sources/ and library/renders (wav + json sidecars), library/voices; exports are streamed
@@ -64,6 +65,10 @@ voice and mode or the effects that made them. The page, top to bottom:
 6. **Undo** walks back through render, conversion, take. **Export** downloads what is showing as Opus 48 kbps
    for the game (Chromium decodes it natively, about 20 KB per line) or MP3 128 kbps for sharing, 48 kHz
    mono, peak-normalised to −1 dBFS, encoded on demand; WAV masters stay in the library.
+
+The **Library** page (the list icon in the header) shows every original, augmented clip and reference voice with the
+same search, chips and sorts as the picker. On each row: play, click the name to rename, click the Type tag to flip
+Voice and SFX, export for the game or for sharing, delete.
 
 Voices are synthesised with Kokoro (nobody's real voice): `bf_alice` and
 `af_jessica` read at about 213 Hz, `af_bella` 209, `af_sarah` 204, `af_heart` 202; the breathy `af_nicole` and

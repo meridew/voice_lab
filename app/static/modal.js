@@ -1,12 +1,13 @@
-// Overlays: a filterable list (the library, the effects) and a small form dialog (a new voice).
+// Overlays: a filterable list (the library picker, the effects) and a small form dialog (a new voice, the microphone).
 import { icons } from './lab.js'
+import { filterList, tags } from './list.js'
 
 const open = (title, body, extraClass = '') => {
   const backdrop = document.createElement('div')
   backdrop.className = 'backdrop'
   backdrop.innerHTML = `
     <div class="modal ${extraClass}" role="dialog" aria-label="${title}">
-      <header><span class="label">${title}</span><span class="mono text-xs muted" data-count></span>
+      <header><span class="label">${title}</span>
         <button class="btn-icon" title="Close" aria-label="Close" type="button" data-close><i data-lucide="x"></i></button></header>
       ${body}
     </div>`
@@ -19,55 +20,23 @@ const open = (title, body, extraClass = '') => {
 }
 
 /**
- * A modal list built for hundreds of rows. `rows` are { label, meta, facets, pick, remove? } where `facets` is a
- * map such as { Type: 'Voice', Stage: 'Original' }: every facet becomes a chip group (any selected value in a group
- * matches; groups combine). Search covers label, meta and facet values. `sorts` are { label, by(a, b) }. Picking
- * closes it, as do Escape and the backdrop; a row with `remove` gets a bin icon that removes it in place.
+ * A modal list in a frame that never changes size: `rows` are { label, meta?, facets?, pick, remove? } (filterList does
+ * the filtering). Picking closes it, as do Escape and the backdrop; a row with `remove` gets a bin that removes it in place.
  */
 export function modal(title, rows, { sorts = [] } = {}) {
-  const keys = [...new Set(rows.flatMap((r) => Object.keys(r.facets ?? {})))]
-  const values = (key) => [...new Set(rows.map((r) => r.facets?.[key]).filter(Boolean))].sort()
-  const state = { q: '', sel: Object.fromEntries(keys.map((k) => [k, new Set()])), sort: 0 }
-  const { backdrop, close, el } = open(title, `
-      <div class="toolbar">
-        <input class="input flex-1" placeholder="Search" autocomplete="off" data-q>
-        ${sorts.length ? `<select class="select" data-sort>${sorts.map((s, i) => `<option value="${i}">${s.label}</option>`).join('')}</select>` : ''}
-      </div>
-      ${keys.map((k) => `<div class="chips"><span class="label">${k}</span>${values(k).map((v) =>
-        `<button class="chip" data-facet="${k}" data-value="${v}">${v}</button>`).join('')}</div>`).join('')}
-      <ul data-list></ul>`)
-  const text = (r) => `${r.label} ${r.meta ?? ''} ${Object.values(r.facets ?? {}).join(' ')}`.toLowerCase()
-  const render = () => {
-    const q = state.q.trim().toLowerCase()
-    const list = rows.map((r, i) => ({ r, i })).filter(({ r }) =>
-      (!q || text(r).includes(q)) && keys.every((k) => !state.sel[k].size || state.sel[k].has(r.facets?.[k])))
-    if (sorts[state.sort]) list.sort((a, b) => sorts[state.sort].by(a.r, b.r))
-    el('list').innerHTML = list.map(({ r, i }) => `<li class="flex items-center gap-1">
-        <button class="row" data-row="${i}"><span>${r.label}</span>${Object.values(r.facets ?? {}).map((v) => `<span class="tag">${v}</span>`).join('')}
-          <span class="meta mono">${r.meta ?? ''}</span></button>
-        ${r.remove ? `<button class="btn-icon btn-sm" title="Delete" aria-label="Delete" data-remove="${i}"><i data-lucide="trash-2"></i></button>` : ''}
-      </li>`).join('') || '<li class="px-3 py-6 text-center text-sm muted">Nothing matches</li>'
-    el('count').textContent = `${list.length} of ${rows.length}`
-    icons()
-  }
+  const { backdrop, close, el } = open(title, '<div class="frame" data-body></div>')
+  const list = filterList(el('body'), rows, { sorts, row: (r, i) => `<li class="flex items-center gap-1">
+      <button class="row" data-row="${i}"><span>${r.label}</span>${tags(r)}<span class="meta mono">${r.meta ?? ''}</span></button>
+      ${r.remove ? `<button class="btn-icon btn-sm" title="Delete" aria-label="Delete" data-remove="${i}"><i data-lucide="trash-2"></i></button>` : ''}
+    </li>` })
   backdrop.onclick = async (e) => {
     if (e.target === backdrop || e.target.closest('[data-close]')) return close()
-    const chip = e.target.closest('[data-facet]')
-    if (chip) {
-      const set = state.sel[chip.dataset.facet], v = chip.dataset.value
-      set.has(v) ? set.delete(v) : set.add(v)
-      chip.classList.toggle('active')
-      return render()
-    }
     const bin = e.target.closest('[data-remove]')
-    if (bin) { const i = +bin.dataset.remove; await rows[i].remove(); rows.splice(i, 1); return render() }
+    if (bin) { const i = +bin.dataset.remove; await rows[i].remove(); rows.splice(i, 1); return list.render() }
     const row = e.target.closest('[data-row]')
     if (row) { close(); rows[+row.dataset.row].pick() }
   }
-  el('q').oninput = () => { state.q = el('q').value; render() }
-  if (el('sort')) el('sort').onchange = () => { state.sort = +el('sort').value; render() }
-  render()
-  el('q').focus()
+  list.focus()
   return close
 }
 

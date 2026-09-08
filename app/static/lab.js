@@ -25,14 +25,31 @@ export function segment(el, onChange) {
   return { set, get value() { return buttons.find((b) => b.classList.contains('active'))?.dataset.value } }
 }
 
-/** Header with the brand and, on the right, whatever the page passes in (the type switch). */
-export function shell(right = '') {
+/** Header with the brand, the page switch (lab | library), and on the right whatever the page passes in. */
+export function shell(page, right = '') {
+  const tab = (href, key, icon, title) =>
+    `<a class="${page === key ? 'active' : ''}" href="${href}" title="${title}" aria-label="${title}"><i data-lucide="${icon}"></i></a>`
   document.body.insertAdjacentHTML('afterbegin', `
-    <header class="mx-auto flex max-w-3xl items-center justify-between px-6 pt-8">
-      <div class="text-lg font-semibold tracking-tight text-slate-100">Voice Lab</div>${right}
+    <header class="mx-auto flex max-w-3xl items-center gap-4 px-6 pt-8">
+      <div class="text-lg font-semibold tracking-tight text-slate-100">Voice Lab</div>
+      <nav class="seg">${tab('/', 'lab', 'audio-waveform', 'Lab')}${tab('/library.html', 'library', 'list-music', 'Library')}</nav>
+      <span class="ml-auto">${right}</span>
     </header>`)
   icons()
 }
+
+/** A clip as the lists show it: label, meta, the sort keys, and facets Type, Stage, Voice, Mode, Effects. */
+export const clipRow = (c) => ({
+  label: c.label, meta: `${c.when} · ${c.seconds.toFixed(1)} s`, when: c.when, seconds: c.seconds,
+  facets: { Type: c.type, Stage: { original: 'Original', augmented: 'Augmented', voice: 'Reference' }[c.kind],
+            ...(c.voice ? { Voice: c.voice, Mode: c.mode } : {}), ...(c.effects ? { Effects: c.effects } : {}) },
+})
+export const CLIP_SORTS = [
+  { label: 'Newest', by: (a, b) => b.when.localeCompare(a.when) },
+  { label: 'Oldest', by: (a, b) => a.when.localeCompare(b.when) },
+  { label: 'Name', by: (a, b) => a.label.localeCompare(b.label) },
+  { label: 'Longest', by: (a, b) => b.seconds - a.seconds },
+]
 
 /** Mono samples of a WaveSurfer's loaded audio between two times (seconds), plus the sample rate. */
 export function monoSamples(ws, start, end) {

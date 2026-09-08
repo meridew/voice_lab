@@ -122,6 +122,13 @@ def delete_clip(kind: str, name: str) -> None:
     _changed()
 
 
+def update_meta(kind: str, name: str, fields: dict) -> None:
+    """Change a clip's label or type; the audio and its stamped file name stay."""
+    side = FOLDERS[kind] / f"{name}.json"
+    _write_json(side, {**_read_json(side), "name": name, **fields})
+    _changed()
+
+
 # ----------------------------------------------------------------------------- originals
 def add_original(path: str, name: str | None = None, meta: dict | None = None) -> str:
     """Store a recording or import as an original with its sidecar; returns its name."""

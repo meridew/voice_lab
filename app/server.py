@@ -3,6 +3,7 @@
     python app/server.py            (or scripts/run.sh)   ->   http://localhost:7860
 
 Routes:  GET  /api/library                      voices and clips with their metadata
+         PATCH /api/clips/{kind}/{name}         rename or re-type a clip (form label, type); DELETE removes it
          POST /api/originals                    save a take (wav upload, name, type, mic)    PUT /api/originals/{name}  replace after a crop
          POST /api/convert                      start a voice conversion job on the uploaded take; GET /api/jobs/{id} for progress
          POST /api/augmented                    save a render made in the browser (wav upload, name, type, effects)
@@ -136,6 +137,17 @@ def api_delete(kind: str, name: str):
         raise HTTPException(404, "no such clip")
     library.delete_clip(kind, name)
     return {"deleted": f"{kind}:{name}"}
+
+
+@app.patch("/api/clips/{kind}/{name}")
+def api_update(kind: str, name: str, label: Annotated[str, Form()] = "", type: Annotated[str, Form()] = ""):
+    if kind not in ("original", "augmented") or not library.clip(kind, name):
+        raise HTTPException(404, "no such clip")
+    fields = {key: value.strip() for key, value in (("label", label), ("type", type)) if value.strip()}
+    if fields.get("type", "Voice") not in ("Voice", "SFX"):
+        raise HTTPException(400, "type is Voice or SFX")
+    library.update_meta(kind, name, fields)
+    return _public(library.clip(kind, name))
 
 
 @app.post("/api/originals")

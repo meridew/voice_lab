@@ -1,11 +1,11 @@
 // The page. One waveform holds a history of take, conversion and render; everything else reads or feeds it.
-import { $, icons, setButton, toast, shell, segment, wavBlob, download } from './lab.js'
+import { $, icons, setButton, toast, shell, segment, wavBlob, download, clipRow, CLIP_SORTS } from './lab.js'
 import { modal, dialog } from './modal.js'
 import { createEditor } from './editor.js'
 import { EFFECTS, newStep, chainName, chainRate, connectChain, renderChain, cardHtml } from './effects.js'
 import { api } from './api.js'
 
-shell(`<div id="type" class="seg">
+shell('lab', `<div id="type" class="seg">
          <button data-value="Voice" class="active" title="A voice line"><i data-lucide="mic-vocal"></i>Voice</button>
          <button data-value="SFX" title="A sound effect"><i data-lucide="drum"></i>SFX</button>
        </div>`)
@@ -131,17 +131,8 @@ const remove = async (c) => {
   history.splice(0, history.length, ...history.filter((t) => t.samples || t.clip))   // an entry only its file held goes with it
   refresh()
 }
-$('btn-library').onclick = async () => modal('Library', (await loadLibrary()).clips.map((c) => ({
-  label: c.label, meta: `${c.when} · ${c.seconds.toFixed(1)} s`, when: c.when, seconds: c.seconds,
-  facets: { Type: c.type, Stage: c.kind === 'original' ? 'Original' : 'Augmented', ...(c.voice ? { Voice: c.voice, Mode: c.mode } : {}),
-            ...(c.effects ? { Effects: c.effects } : {}) },
-  pick: () => pick(c), remove: () => remove(c),
-})), { sorts: [
-  { label: 'Newest', by: (a, b) => b.when.localeCompare(a.when) },
-  { label: 'Oldest', by: (a, b) => a.when.localeCompare(b.when) },
-  { label: 'Name', by: (a, b) => a.label.localeCompare(b.label) },
-  { label: 'Longest', by: (a, b) => b.seconds - a.seconds },
-] })
+$('btn-library').onclick = async () => modal('Library', (await loadLibrary()).clips.map((c) => ({ ...clipRow(c), pick: () => pick(c), remove: () => remove(c) })),
+                                                        { sorts: CLIP_SORTS })
 
 // ---- live chain on playback: media element → active effects → speakers (dry when the top entry is a render)
 const live = () => {
