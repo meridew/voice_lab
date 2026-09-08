@@ -59,6 +59,23 @@ body { margin: 0; background: var(--ink); color: var(--text); -webkit-font-smoot
           background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
 
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: rgba(11, 18, 32, .4); }
+/* The drop-down list itself, on theme where the browser lets a page style it (Chromium customizable select, Chrome 135+);
+   elsewhere the native list stays and is dark through color-scheme. Our own chevron stays; the browser picker icon goes. */
+@supports (appearance: base-select) {
+  .select, .select::picker(select) { appearance: base-select; }
+  .select { display: inline-flex; align-items: center; }
+  .select::picker-icon { display: none; }
+  .select selectedcontent { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .select::picker(select) { margin: 4px 0; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+                            color: var(--text); box-shadow: 0 20px 40px -12px rgba(0, 0, 0, .6); }
+  .select option { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 7px; font-size: 13px; color: #cbd5e1; cursor: pointer; }
+  .select option:hover, .select option:focus-visible { background: rgba(31, 42, 61, .7); color: #f1f5f9; outline: none; }
+  .select option:checked { color: #e0f2fe; }
+  .select option::checkmark { order: 1; margin-left: auto; color: var(--accent); }
+  .select optgroup { padding: 4px 0; }
+  .select optgroup::before { content: attr(label); display: block; padding: 4px 10px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+}
+
 .seg button, .seg a { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px; font-size: 13px; color: #94a3b8;
                       background: transparent; border: 0; cursor: pointer; text-decoration: none; transition: background .15s, color .15s; }
 .seg > * + * { border-left: 1px solid var(--line); }
